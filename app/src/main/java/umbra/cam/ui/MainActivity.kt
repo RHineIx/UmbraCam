@@ -130,7 +130,8 @@ class MainActivity : AppCompatActivity(), XposedServiceHelper.OnServiceListener 
 
     private fun updateModuleStatusUI() {
         val service = mXposedService
-        val isActive = service != null || checkSelfActive()
+        // Rely exclusively on Binder IPC (XposedService) for module activation status per API 102
+        val isActive = service != null
 
         if (isActive) {
             val statusText = if (service != null && !service.frameworkName.isNullOrBlank()) {
@@ -420,8 +421,6 @@ class MainActivity : AppCompatActivity(), XposedServiceHelper.OnServiceListener 
         spannable.setSpan(ForegroundColorSpan(primaryColor), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         tvTitle.text = spannable
     }
-
-    private fun checkSelfActive(): Boolean = false
 
     private fun getOfficialScope(): List<String> {
         return try {
