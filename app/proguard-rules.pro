@@ -5,7 +5,12 @@
 # Automatically rewrite the entries in java_init.list if the classes are obfuscated
 -adaptresourcefilecontents META-INF/xposed/java_init.list
 
--keep class umbra.cam.** { *; }
+# Keep only Xposed entry points and hook classes whose methods are discovered by reflection.
+-keep,allowoptimization class umbra.cam.xposed.UmbraCamModule {
+    public <init>();
+    *;
+}
+-keep,allowoptimization class umbra.cam.hooks.** { *; }
 
 -keep class io.github.libxposed.api.** { *; }
 -keep interface io.github.libxposed.api.** { *; }
@@ -18,5 +23,3 @@
 }
 
 -keepattributes *Annotation*,Signature,EnclosingMethod,InnerClasses,SourceFile,LineNumberTable
-
--dontoptimize

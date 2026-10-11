@@ -21,6 +21,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -69,12 +70,19 @@ data class AppInfo(
     val icon: ImageBitmap?,
 )
 
+data class InstalledAppInfo(
+    val packageName: String,
+    val appName: String,
+    val icon: ImageBitmap?,
+)
+
 class MainActivity :
     ComponentActivity(),
     XposedServiceHelper.OnServiceListener {
     private var isModuleActive = mutableStateOf(false)
     private var serviceFramework = mutableStateOf("")
     private var scopedApps = mutableStateOf<List<String>>(emptyList())
+    private var xposedService: XposedService? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,6 +97,7 @@ class MainActivity :
     }
 
     override fun onServiceBind(service: XposedService) {
+        xposedService = service
         isModuleActive.value = true
         serviceFramework.value = service.frameworkName ?: ""
         scopedApps.value =
@@ -100,13 +109,13 @@ class MainActivity :
     }
 
     override fun onServiceDied(service: XposedService) {
+        xposedService = null
         isModuleActive.value = false
         serviceFramework.value = ""
         scopedApps.value = emptyList()
     }
 
-    private fun checkSelfActive(): Boolean = false
-
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun MainScreen() {
         val context = LocalContext.current
@@ -125,6 +134,10 @@ class MainActivity :
 
         var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
         var scopedAppInfos by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
+        var installedAppInfos by remember { mutableStateOf<List<InstalledAppInfo>>(emptyList()) }
+        var showAppPicker by remember { mutableStateOf(false) }
+        var appSearchQuery by remember { mutableStateOf("") }
+        var selectedPackages by remember { mutableStateOf<Set<String>>(emptySet()) }
 
         val colorScheme = MaterialTheme.colorScheme
 
@@ -154,6 +167,27 @@ class MainActivity :
                         }
                     }
                 scopedAppInfos = infos
+            }
+        }
+
+        LaunchedEffect(Unit) {
+            installedAppInfos = withContext(Dispatchers.IO) {
+                val pm = context.packageManager
+                val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_LAUNCHER)
+                }
+                pm.queryIntentActivities(launcherIntent, PackageManager.MATCH_ALL)
+                    .asSequence()
+                    .mapNotNull { resolveInfo ->
+                        val info = resolveInfo.activityInfo?.applicationInfo ?: return@mapNotNull null
+                        if (info.packageName == packageName) return@mapNotNull null
+                        val label = pm.getApplicationLabel(info).toString()
+                        val icon = runCatching { pm.getApplicationIcon(info).toBitmap().asImageBitmap() }.getOrNull()
+                        InstalledAppInfo(info.packageName, label, icon)
+                    }
+                    .distinctBy { it.packageName }
+                    .sortedBy { it.appName.lowercase(Locale.getDefault()) }
+                    .toList()
             }
         }
 
@@ -240,23 +274,44 @@ class MainActivity :
                 Spacer(modifier = Modifier.height(24.dp))
 
                 // Scoped Apps Card
-                if (scopedAppInfos.isNotEmpty()) {
-                    Card(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 24.dp),
-                        shape = RoundedCornerShape(20.dp),
-                        colors = CardDefaults.cardColors(containerColor = colorScheme.surface),
-                        border = BorderStroke(1.dp, colorScheme.outlineVariant),
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = "Active target apps",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = colorScheme.onSurface,
-                            )
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = colorScheme.surface),
+                    border = BorderStroke(1.dp, colorScheme.outlineVariant),
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Active target apps", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (scopedApps.value.isEmpty()) "No applications selected"
+                                    else "${scopedApps.value.size} application(s) in scope",
+                                    fontSize = 12.sp,
+                                    color = colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    selectedPackages = scopedApps.value.toSet()
+                                    appSearchQuery = ""
+                                    showAppPicker = true
+                                },
+                                enabled = isModuleActive.value,
+                            ) {
+                                Icon(
+                                    Icons.Default.Apps,
+                                    contentDescription = "Manage target applications",
+                                    tint = if (isModuleActive.value) colorScheme.primary else colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (scopedAppInfos.isNotEmpty()) {
                             Spacer(modifier = Modifier.height(16.dp))
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                 items(scopedAppInfos) { app ->
@@ -268,25 +323,17 @@ class MainActivity :
                                             Image(
                                                 bitmap = app.icon,
                                                 contentDescription = app.appName,
-                                                modifier =
-                                                    Modifier
-                                                        .size(48.dp)
-                                                        .clip(RoundedCornerShape(12.dp)),
+                                                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)),
                                             )
                                         } else {
                                             Box(
-                                                modifier =
-                                                    Modifier
-                                                        .size(48.dp)
-                                                        .clip(RoundedCornerShape(12.dp))
-                                                        .background(colorScheme.surfaceVariant),
+                                                modifier = Modifier
+                                                    .size(48.dp)
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(colorScheme.surfaceVariant),
                                                 contentAlignment = Alignment.Center,
                                             ) {
-                                                Icon(
-                                                    Icons.Default.Android,
-                                                    contentDescription = null,
-                                                    tint = colorScheme.onSurfaceVariant,
-                                                )
+                                                Icon(Icons.Default.Android, contentDescription = null, tint = colorScheme.onSurfaceVariant)
                                             }
                                         }
                                         Spacer(modifier = Modifier.height(6.dp))
@@ -587,6 +634,156 @@ class MainActivity :
                     modifier = Modifier.padding(bottom = 32.dp),
                 )
             }
+        }
+
+        if (showAppPicker) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            val filteredApps = installedAppInfos.filter { app ->
+                app.appName.contains(appSearchQuery, ignoreCase = true) ||
+                    app.packageName.contains(appSearchQuery, ignoreCase = true)
+            }
+            ModalBottomSheet(
+                onDismissRequest = { showAppPicker = false },
+                sheetState = sheetState,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                ) {
+                    Text("Choose target applications", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Select apps to request in the UmbraCam LSPosed scope.",
+                        fontSize = 13.sp,
+                        color = colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp, bottom = 14.dp),
+                    )
+                    OutlinedTextField(
+                        value = appSearchQuery,
+                        onValueChange = { appSearchQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        placeholder = { Text("Search by app name or package") },
+                        shape = RoundedCornerShape(14.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .heightIn(max = 440.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        items(filteredApps, key = { it.packageName }) { app ->
+                            val checked = app.packageName in selectedPackages
+                            ListItem(
+                                headlineContent = { Text(app.appName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                supportingContent = {
+                                    Text(app.packageName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
+                                leadingContent = {
+                                    if (app.icon != null) {
+                                        Image(
+                                            bitmap = app.icon,
+                                            contentDescription = app.appName,
+                                            modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)),
+                                        )
+                                    } else {
+                                        Icon(Icons.Default.Android, contentDescription = null)
+                                    }
+                                },
+                                trailingContent = {
+                                    Checkbox(
+                                        checked = checked,
+                                        onCheckedChange = {
+                                            selectedPackages = if (checked) {
+                                                selectedPackages - app.packageName
+                                            } else {
+                                                selectedPackages + app.packageName
+                                            }
+                                        },
+                                    )
+                                },
+                                modifier = Modifier.clickable {
+                                    selectedPackages = if (checked) {
+                                        selectedPackages - app.packageName
+                                    } else {
+                                        selectedPackages + app.packageName
+                                    }
+                                },
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            applyScopeSelection(selectedPackages, context)
+                            showAppPicker = false
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 14.dp, bottom = 24.dp)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Text("Apply scope (${selectedPackages.size})")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun requestScope(packages: List<String>, context: Context) {
+        val service = xposedService
+        if (service == null) {
+            Toast.makeText(context, "LSPosed service is not connected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            service.requestScope(packages, object : XposedService.OnScopeEventListener {
+                override fun onScopeRequestApproved(approved: List<String>) {
+                    runOnUiThread {
+                        scopedApps.value = (scopedApps.value + approved).filter { it != packageName }.distinct().sorted()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "LSPosed scope updated (${approved.size} app(s))",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+
+                override fun onScopeRequestFailed(message: String) {
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "LSPosed request failed: $message", Toast.LENGTH_LONG).show()
+                    }
+                }
+            })
+        } catch (error: Throwable) {
+            Toast.makeText(context, "Unable to request LSPosed scope: ${error.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun applyScopeSelection(selected: Set<String>, context: Context) {
+        val service = xposedService
+        if (service == null) {
+            Toast.makeText(context, "LSPosed service is not connected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val current = scopedApps.value.toSet()
+        val added = (selected - current).toList().sorted()
+        val removed = (current - selected).toList().sorted()
+        try {
+            if (removed.isNotEmpty()) {
+                service.removeScope(removed)
+                scopedApps.value = (current - removed.toSet()).toList().sorted()
+            }
+            if (added.isNotEmpty()) {
+                requestScope(added, context)
+            } else if (removed.isNotEmpty()) {
+                Toast.makeText(context, "Scope updated (${removed.size} app(s) removed)", Toast.LENGTH_SHORT).show()
+            }
+        } catch (error: Throwable) {
+            Toast.makeText(context, "Unable to update LSPosed scope: ${error.message}", Toast.LENGTH_LONG).show()
         }
     }
 
