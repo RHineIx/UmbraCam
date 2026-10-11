@@ -1,4 +1,4 @@
-name: Android Release APK
+name: UmbraCam Release
 
 on:
   push:
@@ -8,15 +8,25 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: umbracam-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx1536m
+
 jobs:
   build:
+    name: Validate, Build, Sign and Publish
     runs-on: ubuntu-latest
-    outputs:
-      commit_message: ${{ steps.msg.outputs.text }}
+    timeout-minutes: 35
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -25,45 +35,154 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Prepare Build
-        id: msg
-        run: |
-          chmod +x gradlew
-          printf "%s" "${{ secrets.SIGNING_KEY }}" | base64 --decode > app/release-key.jks
-          echo "text<<EOF" >> $GITHUB_OUTPUT
-          git log -1 --pretty=%B >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Build
-        run: |
-          V_NAME=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-          V_CODE=$(git tag | wc -l)
-          ./gradlew assembleRelease -PAPP_VERSION_CODE=$V_CODE -PAPP_VERSION_NAME=$V_NAME
+      - name: Read release version
+        id: version
         env:
-          RELEASE_STORE_FILE: release-key.jks
-          RELEASE_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-
-      - name: Rename APK
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          REPO_NAME=$(echo "${{ github.repository }}" | cut -d '/' -f 2)
-          TAG_NAME=${{ github.ref_name }}
-          mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/${REPO_NAME}-${TAG_NAME}.apk
+          set -euo pipefail
+          VERSION_NAME="${TAG_NAME#v}"
+          [[ "$VERSION_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || {
+            echo "Tag must use vMAJOR.MINOR.PATCH with an optional prerelease suffix"
+            exit 1
+          }
+          VERSION_CODE=$(git tag --list 'v*' | wc -l | tr -d ' ')
+          [[ "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Could not calculate a valid Android versionCode"
+            exit 1
+          }
+          {
+            echo "version_name=$VERSION_NAME"
+            echo "version_code=$VERSION_CODE"
+            echo "tag_name=$TAG_NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building UmbraCam $VERSION_NAME (versionCode $VERSION_CODE)"
 
-      - name: Release
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          [[ -n "$KEYSTORE_BASE64" ]] || {
+            echo "Missing required repository secret: KEYSTORE_BASE64"
+            exit 1
+          }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$GITHUB_WORKSPACE/app/release-key.jks"
+          test -s "$GITHUB_WORKSPACE/app/release-key.jks"
+
+      - name: Validate signing secrets
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for variable in KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            [[ -n "${!variable}" ]] || {
+              echo "Missing required repository secret: $variable"
+              exit 1
+            }
+          done
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build signed release APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          RELEASE_STORE_FILE: ${{ github.workspace }}/app/release-key.jks
+          RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace \
+            -PAPP_VERSION_CODE="$VERSION_CODE" \
+            -PAPP_VERSION_NAME="$VERSION_NAME"
+
+      - name: Verify APK and create checksums
+        id: artifacts
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          APK_DIR="app/build/outputs/apk/release"
+          mapfile -t APKS < <(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' | sort)
+          (( ${#APKS[@]} > 0 )) || {
+            echo "No release APK was produced"
+            exit 1
+          }
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          [[ -x "$APKSIGNER" ]] || {
+            echo "Android apksigner was not found"
+            exit 1
+          }
+
+          mkdir -p release_artifacts
+          for apk in "${APKS[@]}"; do
+            "$APKSIGNER" verify --verbose "$apk"
+            cp "$apk" "release_artifacts/UmbraCam-${TAG_NAME}-$(basename "$apk")"
+          done
+
+          {
+            printf 'UmbraCam release %s (versionCode %s)\n' "$VERSION_NAME" "$VERSION_CODE"
+            printf 'Commit: %s\n\n' "$GITHUB_SHA"
+            sha256sum release_artifacts/*.apk
+          } > release_artifacts/SHA256SUMS.txt
+          cat release_artifacts/SHA256SUMS.txt
+
+      - name: Create release notes
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## UmbraCam ${TAG_NAME}"
+            echo
+            echo "**Version name:** \\`${VERSION_NAME}\\`"
+            echo "**Version code:** \\`${VERSION_CODE}\\`"
+            echo "**Workflow run:** #${GITHUB_RUN_NUMBER}"
+            echo "**Commit:** \\`${GITHUB_SHA}\\`"
+            echo
+            echo "APK signatures were verified during the workflow."
+            echo "SHA-256 hashes are included in \\`SHA256SUMS.txt\\`."
+          } > RELEASE_BODY.md
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UmbraCam-${{ steps.version.outputs.tag_name }}
+          path: |
+            release_artifacts/*.apk
+            release_artifacts/SHA256SUMS.txt
+            RELEASE_BODY.md
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/release/*.apk
-          body: ${{ steps.msg.outputs.text }}
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: UmbraCam ${{ steps.version.outputs.tag_name }}
+          body_path: RELEASE_BODY.md
+          generate_release_notes: true
+          prerelease: ${{ contains(steps.version.outputs.version_name, '-') }}
+          files: |
+            release_artifacts/*.apk
+            release_artifacts/SHA256SUMS.txt
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
 
-  mirror:
-    needs: build
-    uses: ./.github/workflows/mirror_official.yml
-    with:
-      tag_name: ${{ github.ref_name }}
-      release_name: ${{ github.ref_name }}
-      release_body: ${{ needs.build.outputs.commit_message }}
-    secrets: inherit
+      - name: Clean signing material
+        if: ${{ always() }}
+        run: rm -f "$GITHUB_WORKSPACE/app/release-key.jks"
