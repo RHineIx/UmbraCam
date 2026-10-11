@@ -1,4 +1,4 @@
-package com.hazbu.fakelocation
+package umbra.cam.test
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Test
@@ -14,6 +14,6 @@ class ExampleInstrumentedTest {
     @Test
     fun useAppContext() {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("com.hazbu.fakelocation", appContext.packageName)
+        assertEquals("umbra.cam.test", appContext.packageName)
     }
 }

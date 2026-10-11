@@ -1,8 +1,12 @@
 <resources>
-    <style name="Theme.xCam" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.UmbraCam" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/umbra_primary</item>
+        <item name="colorSecondary">@color/umbra_secondary</item>
+        <item name="android:fontFamily">sans</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

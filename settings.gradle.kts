@@ -24,6 +24,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "xCam"
+rootProject.name = "UmbraCam"
 include(":app")
  

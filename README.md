@@ -1,6 +1,6 @@
-# xCam - Universal Virtual Camera & Media Injection Xposed Module
+# UmbraCam - Universal Virtual Camera & Media Injection Xposed Module
 
-**xCam** is a high-performance, universal Xposed module built with the modern **LibXposed API (API 101)**. It seamlessly injects virtual media (videos and images) into live camera feeds, photo capture routines, and video recording sessions across a wide variety of Android applications, supporting **Android 9 up to Android 16 (API 28 - API 36+)**.
+**UmbraCam** is a high-performance, universal Xposed module built with the modern **LibXposed API (API 102)**. It seamlessly injects virtual media (videos and images) into live camera feeds, photo capture routines, and video recording sessions across a wide variety of Android applications, supporting **Android 9 up to Android 16 (API 28 - API 36+)**.
 
 ---
 
@@ -56,7 +56,7 @@
 This project is licensed under the **GNU General Public License v3.0**.
 
 ```text
-Copyright (C) 2026 hazbu
+Copyright (C) 2026 RHineIx
 ```
 
 ## ⚠️ Disclaimer

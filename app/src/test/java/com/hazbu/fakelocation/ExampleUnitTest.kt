@@ -1,4 +1,4 @@
-package com.hazbu.fakelocation
+package umbra.cam.test
 import org.junit.Test
 import org.junit.Assert.*
 /**

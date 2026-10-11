@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace = "com.hazbu.xcam"
+    namespace = "umbra.cam"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.hazbu.xcam"
+        applicationId = "umbra.cam"
         minSdk = 28
         targetSdk = 36
         versionCode = project.findProperty("APP_VERSION_CODE")?.toString()?.toInt() ?: System.getenv("APP_VERSION_CODE")?.toInt() ?: 1
