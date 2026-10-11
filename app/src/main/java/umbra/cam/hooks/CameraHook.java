@@ -20,6 +20,7 @@ import io.github.libxposed.api.XposedModuleInterface;
  * Hooks for the original Camera API (android.hardware.Camera).
  * Consolidated all Legacy Camera logic including Renderer hooks.
  */
+@SuppressWarnings("deprecation")
 public class CameraHook {
     private static final long PREVIEW_RESTART_DELAY_MS = 100;
 
@@ -171,4 +172,3 @@ public class CameraHook {
         }
     }
 }
-

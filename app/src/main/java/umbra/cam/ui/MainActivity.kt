@@ -11,484 +11,681 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
-import android.view.Gravity
-import android.view.View
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.TextView
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.RotateLeft
+import androidx.compose.material.icons.automirrored.filled.RotateRight
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.core.content.edit
-import androidx.core.graphics.toColorInt
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.color.DynamicColors
-import com.google.android.material.color.MaterialColors
-import com.google.android.material.materialswitch.MaterialSwitch
-import umbra.cam.R
-import umbra.cam.data.Constants.KEY_ENABLE_CAPTURE_NOTIF
-import umbra.cam.data.Constants.KEY_IS_MIRRORED
-import umbra.cam.data.Constants.KEY_LATEST_PIPELINE_APP
-import umbra.cam.data.Constants.KEY_LATEST_PIPELINE_ROUTE
-import umbra.cam.data.Constants.KEY_LATEST_PIPELINE_TIME
-import umbra.cam.data.Constants.KEY_ROTATION_ANGLE
-import umbra.cam.data.Constants.KEY_MEDIA_PATH
-import umbra.cam.data.Constants.PREFS_NAME
+import androidx.core.graphics.drawable.toBitmap
+import io.github.libxposed.service.XposedService
+import io.github.libxposed.service.XposedServiceHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import umbra.cam.data.Constants
+import umbra.cam.ui.theme.UmbraCamTheme
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import io.github.libxposed.service.XposedService
-import io.github.libxposed.service.XposedServiceHelper
+import java.util.*
+import kotlin.coroutines.resume
 
-class MainActivity : AppCompatActivity(), XposedServiceHelper.OnServiceListener {
+data class AppInfo(
+    val packageName: String,
+    val appName: String,
+    val icon: ImageBitmap?,
+)
 
-    companion object {
-        private const val VIRTUAL_PREFIX = "virtual."
-        private const val DEFAULT_VIDEO_NAME = "virtual.mp4"
-    }
-
-    private lateinit var ivPreview: ImageView
-    private lateinit var tvNoPreview: TextView
-    private lateinit var btnDeleteMedia: MaterialButton
-    private lateinit var btnMirror: MaterialButton
-    private lateinit var btnRotateLeft: MaterialButton
-    private lateinit var btnRotateRight: MaterialButton
-    private lateinit var btnSelectVideo: MaterialButton
-    private lateinit var tvModuleStatus: TextView
-    private lateinit var cardModuleStatus: com.google.android.material.card.MaterialCardView
-    private lateinit var cardScopedApps: com.google.android.material.card.MaterialCardView
-    private lateinit var layoutScopedApps: LinearLayout
-
-    private lateinit var switchCaptureNotif: MaterialSwitch
-    private lateinit var tvPipelineEmpty: TextView
-    private lateinit var layoutPipelineDetails: LinearLayout
-    private lateinit var tvPipelineApp: TextView
-    private lateinit var tvPipelineRoute: TextView
-    private lateinit var tvPipelineTime: TextView
-    private lateinit var btnCopyPipeline: MaterialButton
-    private lateinit var btnClearPipeline: MaterialButton
-
-    private var isMirrored = false
-    private var rotationAngle = 0
-    private var mXposedService: XposedService? = null
-
-    private val notifPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (!isGranted) {
-            Toast.makeText(this, "Notification permission is required for Capture Alert Card", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private val videoPickerLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        if (result.resultCode == RESULT_OK) {
-            val data: Intent? = result.data
-            data?.data?.let { uri ->
-                copyMediaToInternal(uri)
-            }
-        }
-    }
+class MainActivity :
+    ComponentActivity(),
+    XposedServiceHelper.OnServiceListener {
+    private var isModuleActive = mutableStateOf(false)
+    private var serviceFramework = mutableStateOf("")
+    private var scopedApps = mutableStateOf<List<String>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        DynamicColors.applyToActivityIfAvailable(this)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContentView(R.layout.activity_main)
         XposedServiceHelper.registerListener(this)
-        setupWindowInsets()
-        setupUI()
-        loadSettings()
-        updateModuleStatusUI()
-    }
 
-    override fun onResume() {
-        super.onResume()
-        loadSettings()
-        updateModuleStatusUI()
+        setContent {
+            UmbraCamTheme {
+                MainScreen()
+            }
+        }
     }
 
     override fun onServiceBind(service: XposedService) {
-        mXposedService = service
-        runOnUiThread { updateModuleStatusUI() }
+        isModuleActive.value = true
+        serviceFramework.value = service.frameworkName ?: ""
+        scopedApps.value =
+            try {
+                service.scope.filter { it != packageName }
+            } catch (e: Exception) {
+                emptyList()
+            }
     }
 
     override fun onServiceDied(service: XposedService) {
-        mXposedService = null
-        runOnUiThread { updateModuleStatusUI() }
+        isModuleActive.value = false
+        serviceFramework.value = ""
+        scopedApps.value = emptyList()
     }
 
-    private fun updateModuleStatusUI() {
-        val service = mXposedService
-        // Rely exclusively on Binder IPC (XposedService) for module activation status per API 102
-        val isActive = service != null
+    private fun checkSelfActive(): Boolean = false
 
-        if (isActive) {
-            val statusText = if (service != null && !service.frameworkName.isNullOrBlank()) {
-                "${getString(R.string.status_module_active)} (${service.frameworkName})"
-            } else {
-                getString(R.string.status_module_active)
-            }
-            tvModuleStatus.text = statusText
-            val activeColor = MaterialColors.getColor(tvModuleStatus, androidx.appcompat.R.attr.colorPrimary)
-            tvModuleStatus.setTextColor(activeColor)
-            cardModuleStatus.strokeColor = activeColor
-            refreshLSPosedScope()
-        } else {
-            tvModuleStatus.text = getString(R.string.status_module_inactive)
-            val inactiveColor = MaterialColors.getColor(tvModuleStatus, com.google.android.material.R.attr.colorOnSurfaceVariant)
-            val strokeColor = MaterialColors.getColor(tvModuleStatus, com.google.android.material.R.attr.colorOutline)
-            tvModuleStatus.setTextColor(inactiveColor)
-            cardModuleStatus.strokeColor = strokeColor
-            cardScopedApps.visibility = View.GONE
+    @Composable
+    private fun MainScreen() {
+        val context = LocalContext.current
+        val prefs = remember { context.getSharedPreferences(Constants.PREFS_NAME, Context.MODE_PRIVATE) }
+        val coroutineScope = rememberCoroutineScope()
+
+        var mediaPath by remember { mutableStateOf(prefs.getString(Constants.KEY_MEDIA_PATH, "") ?: "") }
+        var isMirrored by remember { mutableStateOf(prefs.getBoolean(Constants.KEY_IS_MIRRORED, false)) }
+        var rotationAngle by remember { mutableStateOf(prefs.getInt(Constants.KEY_ROTATION_ANGLE, 0)) }
+        var enableNotif by remember { mutableStateOf(prefs.getBoolean(Constants.KEY_ENABLE_CAPTURE_NOTIF, true)) }
+        var isProcessing by remember { mutableStateOf(false) }
+
+        var pipelineApp by remember { mutableStateOf(prefs.getString(Constants.KEY_LATEST_PIPELINE_APP, "") ?: "") }
+        var pipelineRoute by remember { mutableStateOf(prefs.getString(Constants.KEY_LATEST_PIPELINE_ROUTE, "") ?: "") }
+        var pipelineTime by remember { mutableStateOf(prefs.getLong(Constants.KEY_LATEST_PIPELINE_TIME, 0L)) }
+
+        var previewBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+        var scopedAppInfos by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
+
+        val colorScheme = MaterialTheme.colorScheme
+
+        fun refreshPipeline() {
+            pipelineApp = prefs.getString(Constants.KEY_LATEST_PIPELINE_APP, "") ?: ""
+            pipelineRoute = prefs.getString(Constants.KEY_LATEST_PIPELINE_ROUTE, "") ?: ""
+            pipelineTime = prefs.getLong(Constants.KEY_LATEST_PIPELINE_TIME, 0L)
         }
-    }
 
-    private fun setupWindowInsets() {
-        val mainView = findViewById<View>(R.id.main)
-        ViewCompat.setOnApplyWindowInsetsListener(mainView) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val density = resources.displayMetrics.density
-            val basePadding = (24 * density).toInt()
-            v.setPadding(
-                systemBars.left + basePadding,
-                systemBars.top + basePadding,
-                systemBars.right + basePadding,
-                systemBars.bottom + basePadding
-            )
-            insets
+        LaunchedEffect(mediaPath) {
+            previewBitmap = loadPreviewBitmap(mediaPath)
         }
-    }
 
-    private fun setupUI() {
-        val tvTitle = findViewById<TextView>(R.id.tv_title)
-        setupTitleSpannable(tvTitle)
-        ivPreview = findViewById(R.id.iv_preview)
-        tvNoPreview = findViewById(R.id.tv_no_preview)
-        btnDeleteMedia = findViewById(R.id.btn_delete_media)
-        btnMirror = findViewById(R.id.btn_mirror)
-        btnRotateLeft = findViewById(R.id.btn_rotate_left)
-        btnRotateRight = findViewById(R.id.btn_rotate_right)
-        btnSelectVideo = findViewById(R.id.btn_select_video)
-        tvModuleStatus = findViewById(R.id.tv_module_status)
-        cardModuleStatus = findViewById(R.id.card_module_status)
-        cardScopedApps = findViewById(R.id.card_scoped_apps)
-        layoutScopedApps = findViewById(R.id.layout_scoped_apps)
-
-        switchCaptureNotif = findViewById(R.id.switch_capture_notif)
-        tvPipelineEmpty = findViewById(R.id.tv_pipeline_empty)
-        layoutPipelineDetails = findViewById(R.id.layout_pipeline_details)
-        tvPipelineApp = findViewById(R.id.tv_pipeline_app)
-        tvPipelineRoute = findViewById(R.id.tv_pipeline_route)
-        tvPipelineTime = findViewById(R.id.tv_pipeline_time)
-        btnCopyPipeline = findViewById(R.id.btn_copy_pipeline)
-        btnClearPipeline = findViewById(R.id.btn_clear_pipeline)
-
-        switchCaptureNotif.setOnCheckedChangeListener { _, isChecked ->
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
-                putBoolean(KEY_ENABLE_CAPTURE_NOTIF, isChecked)
-            }
-            if (isChecked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
+        // Fetch App Icons and Names asynchronously
+        LaunchedEffect(scopedApps.value) {
+            withContext(Dispatchers.IO) {
+                val pm = context.packageManager
+                val infos =
+                    scopedApps.value.map { pkg ->
+                        try {
+                            val info = pm.getApplicationInfo(pkg, 0)
+                            val name = pm.getApplicationLabel(info).toString()
+                            val iconBmp = pm.getApplicationIcon(info).toBitmap().asImageBitmap()
+                            AppInfo(pkg, name, iconBmp)
+                        } catch (e: Exception) {
+                            AppInfo(pkg, pkg, null)
+                        }
+                    }
+                scopedAppInfos = infos
             }
         }
 
-        btnCopyPipeline.setOnClickListener {
-            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            val app = prefs.getString(KEY_LATEST_PIPELINE_APP, "") ?: ""
-            val route = prefs.getString(KEY_LATEST_PIPELINE_ROUTE, "") ?: ""
-            val time = prefs.getLong(KEY_LATEST_PIPELINE_TIME, 0L)
+        LaunchedEffect(Unit) {
+            while (true) {
+                kotlinx.coroutines.delay(2000)
+                refreshPipeline()
+            }
+        }
 
-            if (app.isEmpty() && route.isEmpty()) {
-                Toast.makeText(this, "No route to copy", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
+        val notifPermissionLauncher =
+            rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+                if (!isGranted) Toast.makeText(context, "Notification permission required", Toast.LENGTH_SHORT).show()
             }
 
-            val formattedTime = if (time > 0L) {
-                SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date(time))
-            } else ""
-
-            val copyText = buildString {
-                if (app.isNotEmpty()) append("Target: $app\n")
-                if (route.isNotEmpty()) append("Route: $route\n")
-                if (formattedTime.isNotEmpty()) append("Time: $formattedTime")
-            }.trim()
-
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            val clip = ClipData.newPlainText("UmbraCam Pipeline", copyText)
-            clipboard?.setPrimaryClip(clip)
-            Toast.makeText(this, "Pipeline route copied to clipboard", Toast.LENGTH_SHORT).show()
-        }
-
-        btnClearPipeline.setOnClickListener {
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
-                remove(KEY_LATEST_PIPELINE_APP)
-                remove(KEY_LATEST_PIPELINE_ROUTE)
-                remove(KEY_LATEST_PIPELINE_TIME)
-            }
-            loadTelemetryUI()
-            Toast.makeText(this, "Pipeline history cleared", Toast.LENGTH_SHORT).show()
-        }
-
-        btnMirror.setOnClickListener {
-            isMirrored = !isMirrored
-            saveSettings()
-            updatePreviewTransform()
-        }
-        btnRotateLeft.setOnClickListener {
-            rotationAngle = (rotationAngle - 90 + 360) % 360
-            saveSettings()
-            updatePreviewTransform()
-        }
-        btnRotateRight.setOnClickListener {
-            rotationAngle = (rotationAngle + 90) % 360
-            saveSettings()
-            updatePreviewTransform()
-        }
-        btnDeleteMedia.setOnClickListener { deleteMedia() }
-        btnSelectVideo.setOnClickListener {
-            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
-            }
-            videoPickerLauncher.launch(intent)
-        }
-    }
-
-    private fun copyMediaToInternal(uri: Uri) {
-        try {
-            val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
-            val isImage = mimeType.startsWith("image/")
-            val isVideo = mimeType.startsWith("video/")
-
-            if (!isImage && !isVideo) {
-                Toast.makeText(this, "Invalid file type. Only images and videos are supported.", Toast.LENGTH_LONG).show()
-                return
-            }
-            
-            filesDir.listFiles { _, name -> name.startsWith(VIRTUAL_PREFIX) }?.forEach { it.delete() }
-
-            val extension = android.webkit.MimeTypeMap.getSingleton()
-                .getExtensionFromMimeType(mimeType) ?: "bin"
-
-            if (isImage) {
-                val internalImage = File(filesDir, VIRTUAL_PREFIX + extension)
-                contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(internalImage).use { output -> input.copyTo(output) }
-                }
-                
-                val outputVideo = File(filesDir, DEFAULT_VIDEO_NAME)
-                Toast.makeText(this, "Converting image to video...", Toast.LENGTH_SHORT).show()
-                
-                umbra.cam.utils.MediaConverter.convertImageToMp4(
-                    this, Uri.fromFile(internalImage), outputVideo
-                ) { success ->
-                    runOnUiThread {
-                        internalImage.delete()
-                        if (success) {
-                            saveMediaPath(outputVideo.absolutePath)
-                            Toast.makeText(this, R.string.toast_media_imported, Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(this, "Conversion failed", Toast.LENGTH_SHORT).show()
+        val filePickerLauncher =
+            rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+                if (result.resultCode == RESULT_OK) {
+                    result.data?.data?.let { uri ->
+                        isProcessing = true
+                        coroutineScope.launch {
+                            val newPath = processMediaSelection(context, uri)
+                            if (newPath != null) {
+                                mediaPath = newPath
+                                isMirrored = false
+                                rotationAngle = 0
+                                prefs
+                                    .edit()
+                                    .putString(Constants.KEY_MEDIA_PATH, newPath)
+                                    .putBoolean(Constants.KEY_IS_MIRRORED, false)
+                                    .putInt(Constants.KEY_ROTATION_ANGLE, 0)
+                                    .apply()
+                            }
+                            isProcessing = false
                         }
                     }
                 }
-            } else {
-                val internalFile = File(filesDir, VIRTUAL_PREFIX + extension)
-                contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(internalFile).use { output ->
-                        input.copyTo(output)
+            }
+
+        Scaffold(
+            containerColor = colorScheme.background,
+            modifier = Modifier.fillMaxSize(),
+        ) { paddingValues ->
+            Column(
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues)
+                        .padding(horizontal = 24.dp)
+                        .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Title
+                Text(
+                    text =
+                        buildAnnotatedString {
+                            withStyle(style = SpanStyle(color = colorScheme.primary)) { append("U") }
+                            append("mbraCam")
+                        },
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colorScheme.onBackground,
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Module Status Card
+                Card(
+                    modifier = Modifier.wrapContentWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                    border = BorderStroke(1.dp, if (isModuleActive.value) colorScheme.primary else colorScheme.outlineVariant),
+                ) {
+                    Text(
+                        text = if (isModuleActive.value) "Module active ${if (serviceFramework.value.isNotBlank()) "(${serviceFramework.value})" else ""}" else "Module inactive",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        fontSize = 14.sp,
+                        color = if (isModuleActive.value) colorScheme.primary else colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Scoped Apps Card
+                if (scopedAppInfos.isNotEmpty()) {
+                    Card(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 24.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = colorScheme.surface),
+                        border = BorderStroke(1.dp, colorScheme.outlineVariant),
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Active target apps",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = colorScheme.onSurface,
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                items(scopedAppInfos) { app ->
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.width(64.dp),
+                                    ) {
+                                        if (app.icon != null) {
+                                            Image(
+                                                bitmap = app.icon,
+                                                contentDescription = app.appName,
+                                                modifier =
+                                                    Modifier
+                                                        .size(48.dp)
+                                                        .clip(RoundedCornerShape(12.dp)),
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier =
+                                                    Modifier
+                                                        .size(48.dp)
+                                                        .clip(RoundedCornerShape(12.dp))
+                                                        .background(colorScheme.surfaceVariant),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Android,
+                                                    contentDescription = null,
+                                                    tint = colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = app.appName,
+                                            fontSize = 11.sp,
+                                            color = colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-                saveMediaPath(internalFile.absolutePath)
-                Toast.makeText(this, R.string.toast_media_imported, Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            val errorMsg = getString(R.string.toast_media_import_failed, e.message)
-            Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
-        }
-    }
 
-    private fun loadSettings() {
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val mediaPath = prefs.getString(KEY_MEDIA_PATH, "") ?: ""
-        isMirrored = prefs.getBoolean(KEY_IS_MIRRORED, false)
-        rotationAngle = prefs.getInt(KEY_ROTATION_ANGLE, 0)
-        switchCaptureNotif.isChecked = prefs.getBoolean(KEY_ENABLE_CAPTURE_NOTIF, true)
-        updatePreview(mediaPath)
-        updatePreviewTransform()
-        loadTelemetryUI()
-    }
+                // Settings Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = colorScheme.surface),
+                    border = BorderStroke(1.dp, colorScheme.outlineVariant),
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Text(
+                            text = "Media source",
+                            fontSize = 14.sp,
+                            color = colorScheme.onSurfaceVariant,
+                        )
 
-    private fun loadTelemetryUI() {
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val app = prefs.getString(KEY_LATEST_PIPELINE_APP, "") ?: ""
-        val route = prefs.getString(KEY_LATEST_PIPELINE_ROUTE, "") ?: ""
-        val time = prefs.getLong(KEY_LATEST_PIPELINE_TIME, 0L)
+                        Spacer(modifier = Modifier.height(8.dp))
 
-        if (app.isEmpty() || route.isEmpty()) {
-            tvPipelineEmpty.visibility = View.VISIBLE
-            layoutPipelineDetails.visibility = View.GONE
-        } else {
-            tvPipelineEmpty.visibility = View.GONE
-            layoutPipelineDetails.visibility = View.VISIBLE
-            tvPipelineApp.text = getString(R.string.label_last_active_app, app)
-            tvPipelineRoute.text = route
-            val formatted = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(time))
-            tvPipelineTime.text = getString(R.string.label_last_timestamp, formatted)
-        }
-    }
+                        // Preview Box (1:1 Ratio)
+                        Box(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (isProcessing) {
+                                CircularProgressIndicator(color = colorScheme.primary)
+                            } else if (previewBitmap != null) {
+                                Image(
+                                    bitmap = previewBitmap!!,
+                                    contentDescription = "Media Preview",
+                                    contentScale = ContentScale.Crop,
+                                    modifier =
+                                        Modifier
+                                            .fillMaxSize()
+                                            .graphicsLayer {
+                                                rotationZ = rotationAngle.toFloat()
+                                                scaleX = if (isMirrored) -1f else 1f
+                                            },
+                                )
+                                IconButton(
+                                    onClick = {
+                                        mediaPath = ""
+                                        prefs.edit().putString(Constants.KEY_MEDIA_PATH, "").apply()
+                                    },
+                                    modifier =
+                                        Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(8.dp)
+                                            .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                                            .size(32.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Clear",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                            } else {
+                                Text("No media selected", color = colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                            }
+                        }
 
-    private fun updatePreviewTransform() {
-        ivPreview.scaleX = if (isMirrored) -1f else 1f
-        ivPreview.rotation = rotationAngle.toFloat()
-        val activeColor = MaterialColors.getColor(btnMirror, androidx.appcompat.R.attr.colorPrimary)
-        val activeIconColor = MaterialColors.getColor(btnMirror, com.google.android.material.R.attr.colorOnPrimary, android.graphics.Color.WHITE)
-        val inactiveColor = MaterialColors.getColor(btnMirror, com.google.android.material.R.attr.colorSecondaryContainer, android.graphics.Color.LTGRAY)
-        val inactiveIconColor = MaterialColors.getColor(btnMirror, com.google.android.material.R.attr.colorOnSecondaryContainer, android.graphics.Color.DKGRAY)
-        btnMirror.setBackgroundColor(if (isMirrored) activeColor else inactiveColor)
-        btnMirror.iconTint = android.content.res.ColorStateList.valueOf(if (isMirrored) activeIconColor else inactiveIconColor)
-    }
+                        Spacer(modifier = Modifier.height(16.dp))
 
-    private fun updatePreview(path: String) {
-        if (path.isEmpty() || !File(path).exists()) {
-            ivPreview.setImageBitmap(null)
-            tvNoPreview.visibility = View.VISIBLE
-            btnDeleteMedia.visibility = View.GONE
-            return
-        }
-        tvNoPreview.visibility = View.GONE
-        btnDeleteMedia.visibility = View.VISIBLE
-        try {
-            if (path.endsWith(".mp4", ignoreCase = true)) {
-                val retriever = MediaMetadataRetriever()
-                retriever.setDataSource(path)
-                val bitmap = retriever.getFrameAtTime(1000000)
-                ivPreview.setImageBitmap(bitmap)
-                retriever.release()
-            } else {
-                val bitmap = BitmapFactory.decodeFile(path)
-                ivPreview.setImageBitmap(bitmap)
-            }
-        } catch (_: Exception) {
-            ivPreview.setImageBitmap(null)
-            tvNoPreview.visibility = View.VISIBLE
-        }
-    }
+                        // Transformation Buttons Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            FilledTonalIconButton(
+                                onClick = {
+                                    rotationAngle = (rotationAngle - 90 + 360) % 360
+                                    prefs.edit().putInt(Constants.KEY_ROTATION_ANGLE, rotationAngle).apply()
+                                },
+                                colors =
+                                    IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = colorScheme.surfaceVariant,
+                                        contentColor = colorScheme.onSurface,
+                                    ),
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.RotateLeft, contentDescription = "Rotate Left")
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
 
-    private fun saveSettings() {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
-            putBoolean(KEY_IS_MIRRORED, isMirrored)
-            putInt(KEY_ROTATION_ANGLE, rotationAngle)
-        }
-    }
+                            FilledTonalIconButton(
+                                onClick = {
+                                    isMirrored = !isMirrored
+                                    prefs.edit().putBoolean(Constants.KEY_IS_MIRRORED, isMirrored).apply()
+                                },
+                                colors =
+                                    IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = if (isMirrored) colorScheme.primary else colorScheme.surfaceVariant,
+                                        contentColor = if (isMirrored) colorScheme.onPrimary else colorScheme.onSurface,
+                                    ),
+                            ) {
+                                Icon(Icons.Default.Flip, contentDescription = "Mirror")
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
 
-    private fun saveMediaPath(path: String) {
-        isMirrored = false
-        rotationAngle = 0
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
-            putString(KEY_MEDIA_PATH, path)
-            putBoolean(KEY_IS_MIRRORED, isMirrored)
-            putInt(KEY_ROTATION_ANGLE, rotationAngle)
-        }
-        updatePreview(path)
-        updatePreviewTransform()
-    }
+                            FilledTonalIconButton(
+                                onClick = {
+                                    rotationAngle = (rotationAngle + 90) % 360
+                                    prefs.edit().putInt(Constants.KEY_ROTATION_ANGLE, rotationAngle).apply()
+                                },
+                                colors =
+                                    IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = colorScheme.surfaceVariant,
+                                        contentColor = colorScheme.onSurface,
+                                    ),
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.RotateRight, contentDescription = "Rotate Right")
+                            }
+                        }
 
-    private fun deleteMedia() {
-        filesDir.listFiles { _, name -> name.startsWith(VIRTUAL_PREFIX) }?.forEach { it.delete() }
-        saveMediaPath("")
-        Toast.makeText(this, R.string.toast_media_removed, Toast.LENGTH_SHORT).show()
-    }
+                        Spacer(modifier = Modifier.height(16.dp))
 
-    private fun setupTitleSpannable(tvTitle: TextView) {
-        val titleText = tvTitle.text.toString()
-        val spannable = SpannableStringBuilder(titleText)
-        val primaryColor = MaterialColors.getColor(this, androidx.appcompat.R.attr.colorPrimary, "#FF6200EE".toColorInt())
-        spannable.setSpan(ForegroundColorSpan(primaryColor), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        tvTitle.text = spannable
-    }
-
-    private fun getOfficialScope(): List<String> {
-        return try {
-            mXposedService?.scope ?: emptyList()
-        } catch (_: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun refreshLSPosedScope() {
-        layoutScopedApps.removeAllViews()
-        val officialScope = getOfficialScope().filter { it != packageName }
-        if (officialScope.isNotEmpty()) {
-            officialScope.forEach { addAppIconToLayout(it) }
-            cardScopedApps.visibility = View.VISIBLE
-        } else {
-            cardScopedApps.visibility = View.GONE
-        }
-    }
-
-    private fun addAppIconToLayout(pkgName: String) {
-        try {
-            val icon = packageManager.getApplicationIcon(pkgName)
-            val density = resources.displayMetrics.density
-            val appCard = com.google.android.material.card.MaterialCardView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    (76 * density).toInt(),
-                    (88 * density).toInt()
-                ).also { it.setMargins(0, 0, (10 * density).toInt(), 0) }
-                radius = 16 * density
-                strokeWidth = (1 * density).toInt()
-                setCardElevation(0f)
-                setOnClickListener {
-                    Toast.makeText(this@MainActivity, pkgName, Toast.LENGTH_SHORT).show()
+                        // Select Media Button
+                        Button(
+                            onClick = {
+                                val intent =
+                                    android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+                                        addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                                        type = "*/*"
+                                        putExtra(android.content.Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+                                    }
+                                filePickerLauncher.launch(intent)
+                            },
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(56.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors =
+                                ButtonDefaults.buttonColors(
+                                    containerColor = colorScheme.primary,
+                                    contentColor = colorScheme.onPrimary,
+                                ),
+                        ) {
+                            Text("Choose image or video", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
-            }
-            val content = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setPadding((6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt(), (5 * density).toInt())
-            }
-            val imageView = ImageView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    (38 * density).toInt(),
-                    (38 * density).toInt()
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Capture Alerts Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = colorScheme.surface),
+                    border = BorderStroke(1.dp, colorScheme.outlineVariant),
+                ) {
+                    Row(
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Capture alerts", fontSize = 16.sp, color = colorScheme.onSurface)
+                            Text("Show a notification after a capture", fontSize = 12.sp, color = colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = enableNotif,
+                            onCheckedChange = {
+                                enableNotif = it
+                                prefs.edit().putBoolean(Constants.KEY_ENABLE_CAPTURE_NOTIF, it).apply()
+                                if (it && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                                        PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Pipeline Monitor Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = colorScheme.surface),
+                    border = BorderStroke(1.dp, colorScheme.outlineVariant),
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Pipeline monitor",
+                                fontSize = 16.sp,
+                                color = colorScheme.onSurface,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = {
+                                if (pipelineApp.isNotEmpty()) {
+                                    val clip = ClipData.newPlainText("Pipeline", "Target: $pipelineApp\nRoute: $pipelineRoute")
+                                    (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(clip)
+                                    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                                }
+                            }) {
+                                Text("Copy", fontSize = 12.sp, color = colorScheme.primary)
+                            }
+                            TextButton(onClick = {
+                                prefs
+                                    .edit()
+                                    .remove(Constants.KEY_LATEST_PIPELINE_APP)
+                                    .remove(Constants.KEY_LATEST_PIPELINE_ROUTE)
+                                    .remove(Constants.KEY_LATEST_PIPELINE_TIME)
+                                    .apply()
+                                refreshPipeline()
+                            }) {
+                                Text("Reset", fontSize = 12.sp, color = colorScheme.primary)
+                            }
+                        }
+
+                        if (pipelineApp.isEmpty()) {
+                            Text(
+                                text = "No hook activity yet",
+                                fontSize = 14.sp,
+                                color = colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 12.dp),
+                            )
+                        } else {
+                            Column(modifier = Modifier.padding(top = 12.dp)) {
+                                Text(
+                                    text = "Target: $pipelineApp",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colorScheme.primary,
+                                )
+
+                                Box(
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 8.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(colorScheme.surfaceVariant)
+                                            .padding(12.dp),
+                                ) {
+                                    Text(
+                                        text = pipelineRoute,
+                                        fontSize = 12.sp,
+                                        color = colorScheme.onSurfaceVariant,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    )
+                                }
+
+                                val formatted =
+                                    if (pipelineTime > 0) {
+                                        SimpleDateFormat(
+                                            "HH:mm:ss",
+                                            Locale.getDefault(),
+                                        ).format(Date(pipelineTime))
+                                    } else {
+                                        ""
+                                    }
+                                Text(text = "Time: $formatted", fontSize = 11.sp, color = colorScheme.outlineVariant)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Bottom Note
+                Text(
+                    text = "Restart target apps after changing the media source.",
+                    fontSize = 14.sp,
+                    color = colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 32.dp),
                 )
-                setImageDrawable(icon)
-                contentDescription = pkgName
             }
-            val appLabel = packageManager.getApplicationLabel(
-                packageManager.getApplicationInfo(pkgName, 0)
-            ).toString()
-            val label = TextView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).also { it.topMargin = (4 * density).toInt() }
-                text = appLabel
-                textSize = 11f
-                gravity = Gravity.CENTER
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurface))
-            }
-            content.addView(imageView)
-            content.addView(label)
-            appCard.addView(content)
-            layoutScopedApps.addView(appCard)
-        } catch (_: Exception) {}
+        }
     }
+
+    private suspend fun loadPreviewBitmap(path: String): ImageBitmap? =
+        withContext(Dispatchers.IO) {
+            if (path.isEmpty() || !File(path).exists()) return@withContext null
+            try {
+                if (path.endsWith(".mp4", ignoreCase = true)) {
+                    val retriever = MediaMetadataRetriever()
+                    retriever.setDataSource(path)
+                    val bmp = retriever.getFrameAtTime(1000000)
+                    retriever.release()
+                    bmp?.asImageBitmap()
+                } else {
+                    BitmapFactory.decodeFile(path)?.asImageBitmap()
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+    private suspend fun processMediaSelection(
+        context: Context,
+        uri: Uri,
+    ): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                var mimeType = context.contentResolver.getType(uri)
+                if (mimeType == null) {
+                    val extStr = android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.toString())
+                    mimeType =
+                        android.webkit.MimeTypeMap
+                            .getSingleton()
+                            .getMimeTypeFromExtension(extStr?.lowercase(Locale.ROOT))
+                            ?: "application/octet-stream"
+                }
+
+                val isImage = mimeType.startsWith("image/")
+                val isVideo = mimeType.startsWith("video/")
+
+                if (!isImage && !isVideo) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "Unsupported file type", Toast.LENGTH_SHORT).show()
+                    }
+                    return@withContext null
+                }
+
+                context.filesDir.listFiles { _, name -> name.startsWith("virtual.") }?.forEach { it.delete() }
+                val extension =
+                    android.webkit.MimeTypeMap
+                        .getSingleton()
+                        .getExtensionFromMimeType(mimeType) ?: "bin"
+
+                if (isImage) {
+                    val internalImage = File(context.filesDir, "virtual.$extension")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(internalImage).use { output -> input.copyTo(output) }
+                    }
+
+                    val outputVideo = File(context.filesDir, "virtual.mp4")
+
+                    val success =
+                        suspendCancellableCoroutine<Boolean> { continuation ->
+                            Handler(Looper.getMainLooper()).post {
+                                try {
+                                    umbra.cam.utils.MediaConverter.convertImageToMp4(
+                                        context,
+                                        Uri.fromFile(internalImage),
+                                        outputVideo,
+                                    ) { result ->
+                                        if (continuation.isActive) continuation.resume(result)
+                                    }
+                                } catch (e: Exception) {
+                                    if (continuation.isActive) continuation.resume(false)
+                                }
+                            }
+                        }
+
+                    internalImage.delete()
+
+                    if (!success) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Image to Video conversion failed", Toast.LENGTH_SHORT).show()
+                        }
+                        return@withContext null
+                    }
+                    return@withContext outputVideo.absolutePath
+                } else {
+                    val internalFile = File(context.filesDir, "virtual.$extension")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(internalFile).use { output -> input.copyTo(output) }
+                    }
+                    return@withContext internalFile.absolutePath
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Error processing media file", Toast.LENGTH_SHORT).show()
+                }
+                return@withContext null
+            }
+        }
 }
