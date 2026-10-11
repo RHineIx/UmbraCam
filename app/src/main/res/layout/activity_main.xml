@@ -64,6 +64,15 @@
                 android:orientation="vertical"
                 android:padding="16dp">
 
+                <TextView
+                    android:id="@+id/tv_scoped_apps_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/label_active_scopes"
+                    android:textAppearance="?attr/textAppearanceTitleMedium"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textStyle="bold" />
+
                 <HorizontalScrollView
                     android:id="@+id/scroll_scoped_apps"
                     android:layout_width="match_parent"

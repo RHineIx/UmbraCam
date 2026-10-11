@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
+import android.view.Gravity
 import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -444,16 +445,51 @@ class MainActivity : AppCompatActivity(), XposedServiceHelper.OnServiceListener 
     private fun addAppIconToLayout(pkgName: String) {
         try {
             val icon = packageManager.getApplicationIcon(pkgName)
-            val size = (40 * resources.displayMetrics.density).toInt()
+            val density = resources.displayMetrics.density
+            val appCard = com.google.android.material.card.MaterialCardView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    (76 * density).toInt(),
+                    (88 * density).toInt()
+                ).also { it.setMargins(0, 0, (10 * density).toInt(), 0) }
+                radius = 16 * density
+                strokeWidth = (1 * density).toInt()
+                setCardElevation(0f)
+                setOnClickListener {
+                    Toast.makeText(this@MainActivity, pkgName, Toast.LENGTH_SHORT).show()
+                }
+            }
+            val content = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding((6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt(), (5 * density).toInt())
+            }
             val imageView = ImageView(this).apply {
-                val params = LinearLayout.LayoutParams(size, size)
-                params.setMargins(0, 0, 16, 0)
-                layoutParams = params
+                layoutParams = LinearLayout.LayoutParams(
+                    (38 * density).toInt(),
+                    (38 * density).toInt()
+                )
                 setImageDrawable(icon)
                 contentDescription = pkgName
-                setOnClickListener { Toast.makeText(this@MainActivity, pkgName, Toast.LENGTH_SHORT).show() }
             }
-            layoutScopedApps.addView(imageView)
+            val appLabel = packageManager.getApplicationLabel(
+                packageManager.getApplicationInfo(pkgName, 0)
+            ).toString()
+            val label = TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).also { it.topMargin = (4 * density).toInt() }
+                text = appLabel
+                textSize = 11f
+                gravity = Gravity.CENTER
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurface))
+            }
+            content.addView(imageView)
+            content.addView(label)
+            appCard.addView(content)
+            layoutScopedApps.addView(appCard)
         } catch (_: Exception) {}
     }
 }
