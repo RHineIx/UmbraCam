@@ -3,17 +3,16 @@ package umbra.cam.hooks;
 import android.graphics.SurfaceTexture;
 import android.view.Surface;
 
+import io.github.libxposed.api.XposedModuleInterface;
+
 import umbra.cam.xposed.UmbraCamModule;
 
 import java.lang.reflect.Method;
 
-import io.github.libxposed.api.XposedModuleInterface;
-
 /**
- * WebRTC uses the platform Camera1/Camera2 APIs underneath, so camera-frame
- * replacement remains in the normal camera hooks. This hook exposes the
- * SurfaceTexture owned by WebRTC early, allowing the generic surface pipeline
- * to recognise it as a camera sink without a package-specific profile.
+ * WebRTC uses the platform Camera1/Camera2 APIs underneath, so camera-frame replacement remains in
+ * the normal camera hooks. This hook exposes the SurfaceTexture owned by WebRTC early, allowing the
+ * generic surface pipeline to recognise it as a camera sink without a package-specific profile.
  */
 public final class WebRtcHook {
     private final UmbraCamModule module;
@@ -38,26 +37,34 @@ public final class WebRtcHook {
 
     private void hookStartListening(Class<?> helper) {
         for (Method startListening : helper.getDeclaredMethods()) {
-            if (!startListening.getName().equals("startListening") || startListening.getParameterTypes().length != 1) continue;
-            module.hook(startListening).intercept(chain -> {
-                Object result = chain.proceed();
-                registerHelperSurface(chain.getThisObject());
-                return result;
-            });
+            if (!startListening.getName().equals("startListening")
+                    || startListening.getParameterTypes().length != 1) continue;
+            module.hook(startListening)
+                    .intercept(
+                            chain -> {
+                                Object result = chain.proceed(chain.getArgs().toArray());
+                                registerHelperSurface(chain.getThisObject());
+                                return result;
+                            });
             module.logHook("[+] Hooked: SurfaceTextureHelper#startListening");
         }
     }
 
     private void hookStopListening(Class<?> helper) throws NoSuchMethodException {
         Method stopListening = helper.getDeclaredMethod("stopListening");
-        module.hook(stopListening).intercept(chain -> {
-            module.logHook("[*] Activity: WebRTC SurfaceTextureHelper stopped");
-            if (helperSurface != null) {
-                try { helperSurface.release(); } catch (Throwable ignored) {}
-                helperSurface = null;
-            }
-            return chain.proceed();
-        });
+        module.hook(stopListening)
+                .intercept(
+                        chain -> {
+                            module.logHook("[*] Activity: WebRTC SurfaceTextureHelper stopped");
+                            if (helperSurface != null) {
+                                try {
+                                    helperSurface.release();
+                                } catch (Throwable ignored) {
+                                }
+                                helperSurface = null;
+                            }
+                            return chain.proceed(chain.getArgs().toArray());
+                        });
         module.logHook("[+] Hooked: SurfaceTextureHelper#stopListening");
     }
 
@@ -67,7 +74,10 @@ public final class WebRtcHook {
             Object value = getter.invoke(helper);
             if (!(value instanceof SurfaceTexture)) return;
             if (helperSurface != null) {
-                try { helperSurface.release(); } catch (Throwable ignored) {}
+                try {
+                    helperSurface.release();
+                } catch (Throwable ignored) {
+                }
             }
             helperSurface = new Surface((SurfaceTexture) value);
             module.recordPipelineNode("WebRTC(TextureHelper)");

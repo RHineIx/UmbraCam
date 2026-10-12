@@ -10,15 +10,15 @@ import android.os.Looper;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 
+import io.github.libxposed.api.XposedModuleInterface;
+
 import umbra.cam.xposed.UmbraCamModule;
 
 import java.lang.reflect.Method;
 
-import io.github.libxposed.api.XposedModuleInterface;
-
 /**
- * Hooks for the original Camera API (android.hardware.Camera).
- * Consolidated all Legacy Camera logic including Renderer hooks.
+ * Hooks for the original Camera API (android.hardware.Camera). Consolidated all Legacy Camera logic
+ * including Renderer hooks.
  */
 @SuppressWarnings("deprecation")
 public class CameraHook {
@@ -47,63 +47,84 @@ public class CameraHook {
 
     private void hookLegacyMethod1(XposedModuleInterface.PackageReadyParam param) {
         try {
-            @SuppressLint("PrivateApi") Class<?> legacyDeviceClass = param.getClassLoader().loadClass("android.hardware.camera2.legacy.LegacyCameraDevice");
+            @SuppressLint("PrivateApi")
+            Class<?> legacyDeviceClass =
+                    param.getClassLoader()
+                            .loadClass("android.hardware.camera2.legacy.LegacyCameraDevice");
             for (Method method : legacyDeviceClass.getDeclaredMethods()) {
-                if (method.getName().equals("produceFrame") && method.getParameterTypes().length == 5) {
-                    module.hook(method).intercept(chain -> {
-                        int format = (int) chain.getArgs().get(4);
-                        if (format == 0x21) {
-                            int width = (int) chain.getArgs().get(2);
-                            int height = (int) chain.getArgs().get(3);
-                            byte[] replacement = module.handleCapture(width, height);
-                            if (replacement != null) {
-                                Object[] newArgs = chain.getArgs().toArray();
-                                newArgs[1] = replacement;
-                                return chain.proceed(newArgs);
-                            }
-                        }
-                        return chain.proceed();
-                    });
+                if (method.getName().equals("produceFrame")
+                        && method.getParameterTypes().length == 5) {
+                    module.hook(method)
+                            .intercept(
+                                    chain -> {
+                                        int format = (int) chain.getArgs().get(4);
+                                        if (format == 0x21) {
+                                            int width = (int) chain.getArgs().get(2);
+                                            int height = (int) chain.getArgs().get(3);
+                                            byte[] replacement =
+                                                    module.handleCapture(width, height);
+                                            if (replacement != null) {
+                                                Object[] newArgs = chain.getArgs().toArray();
+                                                newArgs[1] = replacement;
+                                                return chain.proceed(newArgs);
+                                            }
+                                        }
+                                        return chain.proceed(chain.getArgs().toArray());
+                                    });
                     module.logHook("[+] Hooked: LegacyCameraDevice#produceFrame");
                 }
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+        }
     }
 
     private void hookViewfinder(XposedModuleInterface.PackageReadyParam param) {
         try {
-            Method setPreviewDisplay = Camera.class.getDeclaredMethod("setPreviewDisplay", SurfaceHolder.class);
-            module.hook(setPreviewDisplay).intercept(chain -> {
-                SurfaceHolder holder = (SurfaceHolder) chain.getArgs().get(0);
-                if (holder != null && holder.getSurface() != null) viewfinderSurface = holder.getSurface();
-                return chain.proceed();
-            });
+            Method setPreviewDisplay =
+                    Camera.class.getDeclaredMethod("setPreviewDisplay", SurfaceHolder.class);
+            module.hook(setPreviewDisplay)
+                    .intercept(
+                            chain -> {
+                                SurfaceHolder holder = (SurfaceHolder) chain.getArgs().get(0);
+                                if (holder != null && holder.getSurface() != null)
+                                    viewfinderSurface = holder.getSurface();
+                                return chain.proceed(chain.getArgs().toArray());
+                            });
             module.logHook("[+] Hooked: Camera#setPreviewDisplay");
 
-            Method setPreviewTexture = Camera.class.getDeclaredMethod("setPreviewTexture", SurfaceTexture.class);
-            module.hook(setPreviewTexture).intercept(chain -> {
-                SurfaceTexture texture = (SurfaceTexture) chain.getArgs().get(0);
-                if (texture != null) viewfinderSurface = new Surface(texture);
-                return chain.proceed();
-            });
+            Method setPreviewTexture =
+                    Camera.class.getDeclaredMethod("setPreviewTexture", SurfaceTexture.class);
+            module.hook(setPreviewTexture)
+                    .intercept(
+                            chain -> {
+                                SurfaceTexture texture = (SurfaceTexture) chain.getArgs().get(0);
+                                if (texture != null) viewfinderSurface = new Surface(texture);
+                                return chain.proceed(chain.getArgs().toArray());
+                            });
             module.logHook("[+] Hooked: Camera#setPreviewTexture");
 
             Method startPreview = Camera.class.getDeclaredMethod("startPreview");
-            module.hook(startPreview).intercept(chain -> {
-                Object result = chain.proceed();
-                if (module.getMediaPath() != null && viewfinderSurface != null && viewfinderSurface.isValid()) {
-                    module.registerPreviewSurface(viewfinderSurface);
-                }
-                return result;
-            });
+            module.hook(startPreview)
+                    .intercept(
+                            chain -> {
+                                Object result = chain.proceed(chain.getArgs().toArray());
+                                if (module.getMediaPath() != null
+                                        && viewfinderSurface != null
+                                        && viewfinderSurface.isValid()) {
+                                    module.registerPreviewSurface(viewfinderSurface);
+                                }
+                                return result;
+                            });
             module.logHook("[+] Hooked: Camera#startPreview");
 
             Method stopPreview = Camera.class.getDeclaredMethod("stopPreview");
-            module.hook(stopPreview).intercept(chain -> {
-                Object result = chain.proceed();
-                module.stopEngine();
-                return result;
-            });
+            module.hook(stopPreview)
+                    .intercept(
+                            chain -> {
+                                Object result = chain.proceed(chain.getArgs().toArray());
+                                module.stopEngine();
+                                return result;
+                            });
             module.logHook("[+] Hooked: Camera#stopPreview");
         } catch (Throwable t) {
             module.logHook("[!] Failed to hook viewfinder: " + t.getMessage());
@@ -113,14 +134,19 @@ public class CameraHook {
     private void hookCameraParameters(XposedModuleInterface.PackageReadyParam param) {
         try {
             Class<?> paramsClass = Camera.Parameters.class;
-            Method setPreviewSize = paramsClass.getDeclaredMethod("setPreviewSize", int.class, int.class);
-            module.hook(setPreviewSize).intercept(chain -> {
-                int pw = (int) chain.getArgs().get(0);
-                int ph = (int) chain.getArgs().get(1);
-                module.recordPipelineNode("Camera1(Preview " + pw + "x" + ph + " NV21)");
-                module.logHook("[*] Legacy Activity: setPreviewSize " + pw + "x" + ph);
-                return chain.proceed();
-            });
+            Method setPreviewSize =
+                    paramsClass.getDeclaredMethod("setPreviewSize", int.class, int.class);
+            module.hook(setPreviewSize)
+                    .intercept(
+                            chain -> {
+                                int pw = (int) chain.getArgs().get(0);
+                                int ph = (int) chain.getArgs().get(1);
+                                module.recordPipelineNode(
+                                        "Camera1(Preview " + pw + "x" + ph + " NV21)");
+                                module.logHook(
+                                        "[*] Legacy Activity: setPreviewSize " + pw + "x" + ph);
+                                return chain.proceed(chain.getArgs().toArray());
+                            });
             module.logHook("[+] Hooked: Camera.Parameters#setPreviewSize");
         } catch (Throwable t) {
             module.logHook("[!] Failed to hook Camera.Parameters: " + t.getMessage());
@@ -131,39 +157,70 @@ public class CameraHook {
         try {
             for (Method m : Camera.class.getDeclaredMethods()) {
                 if (m.getName().equals("takePicture") && m.getParameterTypes().length == 4) {
-                    module.hook(m).intercept(chain -> {
-                        if (module.getMediaPath() == null) return chain.proceed();
-                        Camera camera = (Camera) chain.getThisObject();
-                        PictureCallback jpegCallback = (PictureCallback) chain.getArgs().get(3);
-                        if (jpegCallback == null) return chain.proceed();
+                    module.hook(m)
+                            .intercept(
+                                    chain -> {
+                                        if (module.getMediaPath() == null)
+                                            return chain.proceed(chain.getArgs().toArray());
+                                        Camera camera = (Camera) chain.getThisObject();
+                                        PictureCallback jpegCallback =
+                                                (PictureCallback) chain.getArgs().get(3);
+                                        if (jpegCallback == null)
+                                            return chain.proceed(chain.getArgs().toArray());
 
-                        module.triggerCaptureState();
-                        Camera.Parameters params = camera.getParameters();
-                        int picW = params.getPictureSize().width;
-                        int picH = params.getPictureSize().height;
-                        byte[] imageData = module.handleCapture(picW, picH);
+                                        module.triggerCaptureState();
+                                        Camera.Parameters params = camera.getParameters();
+                                        int picW = params.getPictureSize().width;
+                                        int picH = params.getPictureSize().height;
+                                        byte[] imageData = module.handleCapture(picW, picH);
 
-                        if (imageData == null) return chain.proceed();
+                                        if (imageData == null)
+                                            return chain.proceed(chain.getArgs().toArray());
 
-                        module.recordPipelineNode("Camera1(takePicture " + picW + "x" + picH + " JPEG)");
-                        module.reportPipelineCapture(picW, picH, imageData);
+                                        module.recordPipelineNode(
+                                                "Camera1(takePicture "
+                                                        + picW
+                                                        + "x"
+                                                        + picH
+                                                        + " JPEG)");
+                                        module.reportPipelineCapture(picW, picH, imageData);
 
-                        final ShutterCallback shutterCallback = (ShutterCallback) chain.getArgs().get(0);
-                        final PictureCallback rawCallback = (PictureCallback) chain.getArgs().get(1);
-                        final PictureCallback postviewCallback = (PictureCallback) chain.getArgs().get(2);
+                                        final ShutterCallback shutterCallback =
+                                                (ShutterCallback) chain.getArgs().get(0);
+                                        final PictureCallback rawCallback =
+                                                (PictureCallback) chain.getArgs().get(1);
+                                        final PictureCallback postviewCallback =
+                                                (PictureCallback) chain.getArgs().get(2);
 
-                        Runnable deliver = () -> {
-                            try {
-                                if (shutterCallback != null) shutterCallback.onShutter();
-                                if (rawCallback != null) rawCallback.onPictureTaken(null, camera);
-                                if (postviewCallback != null) postviewCallback.onPictureTaken(null, camera);
-                                jpegCallback.onPictureTaken(imageData, camera);
-                                mainHandler.postDelayed(() -> { try { camera.startPreview(); } catch (Throwable ignored) {} }, PREVIEW_RESTART_DELAY_MS);
-                            } catch (Throwable ignored) {}
-                        };
-                        if (Looper.myLooper() == Looper.getMainLooper()) deliver.run(); else mainHandler.post(deliver);
-                        return null;
-                    });
+                                        Runnable deliver =
+                                                () -> {
+                                                    try {
+                                                        if (shutterCallback != null)
+                                                            shutterCallback.onShutter();
+                                                        if (rawCallback != null)
+                                                            rawCallback.onPictureTaken(
+                                                                    null, camera);
+                                                        if (postviewCallback != null)
+                                                            postviewCallback.onPictureTaken(
+                                                                    null, camera);
+                                                        jpegCallback.onPictureTaken(
+                                                                imageData, camera);
+                                                        mainHandler.postDelayed(
+                                                                () -> {
+                                                                    try {
+                                                                        camera.startPreview();
+                                                                    } catch (Throwable ignored) {
+                                                                    }
+                                                                },
+                                                                PREVIEW_RESTART_DELAY_MS);
+                                                    } catch (Throwable ignored) {
+                                                    }
+                                                };
+                                        if (Looper.myLooper() == Looper.getMainLooper())
+                                            deliver.run();
+                                        else mainHandler.post(deliver);
+                                        return null;
+                                    });
                     module.logHook("[+] Hooked: Camera#takePicture (Legacy)");
                 }
             }

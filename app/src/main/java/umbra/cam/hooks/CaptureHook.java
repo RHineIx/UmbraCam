@@ -79,7 +79,7 @@ public class CaptureHook {
             for (Method method : BitmapFactory.class.getDeclaredMethods()) {
                 if (method.getName().equals("decodeByteArray")) {
                     module.hook(method).intercept(chain -> {
-                        if (module.isIgnoringHooks()) return chain.proceed();
+                        if (module.isIgnoringHooks()) return chain.proceed(chain.getArgs().toArray());
                         if (module.isCapturingState() && module.getMediaPath() != null) {
                             int activeW = imageReaderHook.getActiveCaptureWidth();
                             int activeH = imageReaderHook.getActiveCaptureHeight();
@@ -87,29 +87,34 @@ public class CaptureHook {
                             int targetH = activeH > 0 ? activeH : Constants.DEFAULT_CAPTURE_HEIGHT;
                             byte[] injected = module.handleCapture(targetW, targetH);
                             if (injected != null) {
-                                BitmapFactory.Options boundOpts = new BitmapFactory.Options();
-                                boundOpts.inJustDecodeBounds = true;
-                                BitmapFactory.decodeByteArray(injected, 0, injected.length, boundOpts);
-                                int actualW = boundOpts.outWidth > 0 ? boundOpts.outWidth : targetW;
-                                int actualH = boundOpts.outHeight > 0 ? boundOpts.outHeight : targetH;
-                                String nodeDesc = "BitmapFactory#decodeByteArray(" + actualW + "x" + actualH + ")";
-                                module.recordPipelineNode(nodeDesc);
-                                module.reportPipelineCapture(actualW, actualH, injected);
-                                module.logHook("[*] Activity: Captured -> Injected into BitmapFactory#decodeByteArray (" + actualW + "x" + actualH + ")");
-                                Object[] args = chain.getArgs().toArray();
-                                args[0] = injected;
-                                if (args.length >= 3) args[2] = injected.length;
-                                return chain.proceed(args);
+                                try {
+                                    module.setIgnoringHooks(true);
+                                    BitmapFactory.Options boundOpts = new BitmapFactory.Options();
+                                    boundOpts.inJustDecodeBounds = true;
+                                    BitmapFactory.decodeByteArray(injected, 0, injected.length, boundOpts);
+                                    int actualW = boundOpts.outWidth > 0 ? boundOpts.outWidth : targetW;
+                                    int actualH = boundOpts.outHeight > 0 ? boundOpts.outHeight : targetH;
+                                    String nodeDesc = "BitmapFactory#decodeByteArray(" + actualW + "x" + actualH + ")";
+                                    module.recordPipelineNode(nodeDesc);
+                                    module.reportPipelineCapture(actualW, actualH, injected);
+                                    module.logHook("[*] Activity: Captured -> Injected into BitmapFactory#decodeByteArray (" + actualW + "x" + actualH + ")");
+                                    Object[] args = chain.getArgs().toArray();
+                                    args[0] = injected;
+                                    if (args.length >= 3) args[2] = injected.length;
+                                    return chain.proceed(args);
+                                } finally {
+                                    module.setIgnoringHooks(false);
+                                }
                             }
                         }
-                        return chain.proceed();
+                        return chain.proceed(chain.getArgs().toArray());
                     });
                     module.logHook("[+] Hooked: BitmapFactory#decodeByteArray");
                 }
                 
                 if (method.getName().equals("decodeStream") && method.getParameterTypes().length >= 1) {
                     module.hook(method).intercept(chain -> {
-                        if (module.isIgnoringHooks()) return chain.proceed();
+                        if (module.isIgnoringHooks()) return chain.proceed(chain.getArgs().toArray());
                         if (module.isCapturingState() && module.getMediaPath() != null) {
                             int activeW = imageReaderHook.getActiveCaptureWidth();
                             int activeH = imageReaderHook.getActiveCaptureHeight();
@@ -139,7 +144,7 @@ public class CaptureHook {
                                 }
                             }
                         }
-                        return chain.proceed();
+                        return chain.proceed(chain.getArgs().toArray());
                     });
                     module.logHook("[+] Hooked: BitmapFactory#decodeStream");
                 }
@@ -151,7 +156,7 @@ public class CaptureHook {
         try {
             Method compress = Bitmap.class.getDeclaredMethod("compress", Bitmap.CompressFormat.class, int.class, OutputStream.class);
             module.hook(compress).intercept(chain -> {
-                if (module.isIgnoringHooks()) return chain.proceed();
+                if (module.isIgnoringHooks()) return chain.proceed(chain.getArgs().toArray());
                 if (module.isCapturingState() && module.getMediaPath() != null) {
                     int activeW = imageReaderHook.getActiveCaptureWidth();
                     int activeH = imageReaderHook.getActiveCaptureHeight();
@@ -183,7 +188,7 @@ public class CaptureHook {
                         }
                     }
                 }
-                return chain.proceed();
+                return chain.proceed(chain.getArgs().toArray());
             });
             module.logHook("[+] Hooked: Bitmap#compress");
         } catch (Throwable ignored) {}
@@ -193,13 +198,13 @@ public class CaptureHook {
         try {
             Method openFD = ContentResolver.class.getDeclaredMethod("openFileDescriptor", Uri.class, String.class);
             module.hook(openFD).intercept(chain -> {
-                if (module.isIgnoringHooks()) return chain.proceed();
+                if (module.isIgnoringHooks()) return chain.proceed(chain.getArgs().toArray());
                 
                 Uri uri = (Uri) chain.getArgs().get(0);
                 String mode = (String) chain.getArgs().get(1);
                 
                 if (uri != null && mode != null && mode.contains("w") && module.isCapturingState()) {
-                    ParcelFileDescriptor pfd = (ParcelFileDescriptor) chain.proceed();
+                    ParcelFileDescriptor pfd = (ParcelFileDescriptor) chain.proceed(chain.getArgs().toArray());
                     if (pfd != null) {
                         int activeW = imageReaderHook.getActiveCaptureWidth();
                         int activeH = imageReaderHook.getActiveCaptureHeight();
@@ -229,7 +234,7 @@ public class CaptureHook {
                     }
                     return pfd;
                 }
-                return chain.proceed();
+                return chain.proceed(chain.getArgs().toArray());
             });
             module.logHook("[+] Hooked: ContentResolver#openFileDescriptor");
         } catch (Throwable ignored) {}
@@ -438,7 +443,7 @@ public class CaptureHook {
                                 recordOutputTarget(recorder, null, (FileDescriptor) target);
                             }
                         }
-                        return chain.proceed();
+                        return chain.proceed(chain.getArgs().toArray());
                     });
                     module.logHook("[+] Hooked: MediaRecorder#" + name);
                 }
@@ -450,14 +455,14 @@ public class CaptureHook {
                 recordStartTime(recorder);
                 module.recordPipelineNode("MediaRecorder#start");
                 module.logHook("[*] Activity: MediaRecorder#start");
-                return chain.proceed();
+                return chain.proceed(chain.getArgs().toArray());
             });
             module.logHook("[+] Hooked: MediaRecorder#start");
 
             Method stopMethod = mrClass.getDeclaredMethod("stop");
             module.hook(stopMethod).intercept(chain -> {
                 Object recorder = chain.getThisObject();
-                Object result = chain.proceed();
+                Object result = chain.proceed(chain.getArgs().toArray());
                 try {
                     replaceMediaRecorderOutput(recorder);
                 } catch (Throwable t) {
@@ -475,7 +480,7 @@ public class CaptureHook {
                         if (recorder != null) {
                             recorderTargets.remove(recorder);
                         }
-                        return chain.proceed();
+                        return chain.proceed(chain.getArgs().toArray());
                     });
                 }
             }
@@ -487,10 +492,10 @@ public class CaptureHook {
             Class<?> mcClass = param.getClassLoader().loadClass("android.media.MediaCodec");
             Method createInputSurface = mcClass.getDeclaredMethod("createInputSurface");
             module.hook(createInputSurface).intercept(chain -> {
-                if (module.isIgnoringHooks()) return chain.proceed();
+                if (module.isIgnoringHooks()) return chain.proceed(chain.getArgs().toArray());
                 module.recordPipelineNode("MediaCodec(InputSurface)");
                 module.logHook("[*] Activity: MediaCodec#createInputSurface");
-                return chain.proceed();
+                return chain.proceed(chain.getArgs().toArray());
             });
             module.logHook("[+] Hooked: MediaCodec#createInputSurface");
         } catch (Throwable ignored) {}

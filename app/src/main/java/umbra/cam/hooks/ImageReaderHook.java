@@ -6,20 +6,21 @@ import android.media.ImageReader;
 
 import androidx.annotation.NonNull;
 
-import umbra.cam.xposed.UmbraCamModule;
+import io.github.libxposed.api.XposedModuleInterface;
+
 import umbra.cam.utils.SystemUtils;
+import umbra.cam.xposed.UmbraCamModule;
+
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
-import io.github.libxposed.api.XposedModuleInterface;
 
 /**
- * Specialized hooks for android.media.ImageReader.
- * Detects when ImageReader is created and when data starts flowing.
- * Added surgical injection for RGBA_8888 (0x1) format used by Instagram.
+ * Specialized hooks for android.media.ImageReader. Detects when ImageReader is created and when
+ * data starts flowing. Added surgical injection for RGBA_8888 (0x1) format used by Instagram.
  */
 public class ImageReaderHook {
     private final UmbraCamModule module;
@@ -83,12 +84,18 @@ public class ImageReaderHook {
 
     private String getFormatName(int format) {
         switch (format) {
-            case ImageFormat.JPEG: return "JPEG";
-            case ImageFormat.YUV_420_888: return "YUV_420_888";
-            case 0x1: return "RGBA_8888";
-            case 0x22: return "PRIVATE";
-            case ImageFormat.RAW_SENSOR: return "RAW_SENSOR";
-            default: return "Format(0x" + Integer.toHexString(format) + ")";
+            case ImageFormat.JPEG:
+                return "JPEG";
+            case ImageFormat.YUV_420_888:
+                return "YUV_420_888";
+            case 0x1:
+                return "RGBA_8888";
+            case 0x22:
+                return "PRIVATE";
+            case ImageFormat.RAW_SENSOR:
+                return "RAW_SENSOR";
+            default:
+                return "Format(0x" + Integer.toHexString(format) + ")";
         }
     }
 
@@ -96,83 +103,131 @@ public class ImageReaderHook {
         try {
             for (Method method : ImageReader.class.getDeclaredMethods()) {
                 if (method.getName().equals("newInstance")) {
-                    module.hook(method).intercept(chain -> {
-                        int w = (int) chain.getArgs().get(0);
-                        int h = (int) chain.getArgs().get(1);
-                        int format = (int) chain.getArgs().get(2);
-                        String fmtName = getFormatName(format);
+                    module.hook(method)
+                            .intercept(
+                                    chain -> {
+                                        int w = (int) chain.getArgs().get(0);
+                                        int h = (int) chain.getArgs().get(1);
+                                        int format = (int) chain.getArgs().get(2);
+                                        String fmtName = getFormatName(format);
 
-                        if (w > 0 && h > 0) {
-                            if (format == ImageFormat.JPEG || (w * h >= activeCaptureWidth * activeCaptureHeight)) {
-                                activeCaptureWidth = w;
-                                activeCaptureHeight = h;
-                            }
-                        }
-                        
-                        Object result = chain.proceed();
-                        if (result instanceof ImageReader) {
-                            ImageReader reader = (ImageReader) result;
-                            long surfaceId = SystemUtils.INSTANCE.getSurfaceId(reader.getSurface());
-                            readerTracker.put(reader, new ReaderMetadata(w, h, format, fmtName, surfaceId));
-                            module.registerImageReaderSurface(reader.getSurface(), format, w, h);
-                            String shortFmt = getShortFormatName(format);
-                            module.recordPipelineNode("ImageReader(" + w + "x" + h + " " + shortFmt + ")");
-                            module.logHook("[+] ImageReader.newInstance: " + w + "x" + h + " " + fmtName + " | ID: " + surfaceId);
-                            module.showToast(w + "x" + h + " (" + fmtName + ")");
-                        }
-                        return result;
-                    });
+                                        if (w > 0 && h > 0) {
+                                            if (format == ImageFormat.JPEG
+                                                    || (w * h
+                                                            >= activeCaptureWidth
+                                                                    * activeCaptureHeight)) {
+                                                activeCaptureWidth = w;
+                                                activeCaptureHeight = h;
+                                            }
+                                        }
+
+                                        Object result = chain.proceed(chain.getArgs().toArray());
+                                        if (result instanceof ImageReader) {
+                                            ImageReader reader = (ImageReader) result;
+                                            long surfaceId =
+                                                    SystemUtils.INSTANCE.getSurfaceId(
+                                                            reader.getSurface());
+                                            readerTracker.put(
+                                                    reader,
+                                                    new ReaderMetadata(
+                                                            w, h, format, fmtName, surfaceId));
+                                            module.registerImageReaderSurface(
+                                                    reader.getSurface(), format, w, h);
+                                            String shortFmt = getShortFormatName(format);
+                                            module.recordPipelineNode(
+                                                    "ImageReader("
+                                                            + w
+                                                            + "x"
+                                                            + h
+                                                            + " "
+                                                            + shortFmt
+                                                            + ")");
+                                            module.logHook(
+                                                    "[+] ImageReader.newInstance: "
+                                                            + w
+                                                            + "x"
+                                                            + h
+                                                            + " "
+                                                            + fmtName
+                                                            + " | ID: "
+                                                            + surfaceId);
+                                            module.showToast(w + "x" + h + " (" + fmtName + ")");
+                                        }
+                                        return result;
+                                    });
                 }
             }
 
             try {
-                Method setListener = ImageReader.class.getDeclaredMethod("setOnImageAvailableListener", ImageReader.OnImageAvailableListener.class, android.os.Handler.class);
-                module.hook(setListener).intercept(chain -> {
-                    ImageReader reader = (ImageReader) chain.getThisObject();
-                    ReaderMetadata meta = readerTracker.get(reader);
-                    module.logHook("[*] ImageReader.setOnImageAvailableListener | Reader: " + (meta != null ? meta.toString() : "unknown") + " | Thread: " + Thread.currentThread().getName());
-                    return chain.proceed();
-                });
+                Method setListener =
+                        ImageReader.class.getDeclaredMethod(
+                                "setOnImageAvailableListener",
+                                ImageReader.OnImageAvailableListener.class,
+                                android.os.Handler.class);
+                module.hook(setListener)
+                        .intercept(
+                                chain -> {
+                                    ImageReader reader = (ImageReader) chain.getThisObject();
+                                    ReaderMetadata meta = readerTracker.get(reader);
+                                    module.logHook(
+                                            "[*] ImageReader.setOnImageAvailableListener | Reader: "
+                                                    + (meta != null ? meta.toString() : "unknown")
+                                                    + " | Thread: "
+                                                    + Thread.currentThread().getName());
+                                    return chain.proceed(chain.getArgs().toArray());
+                                });
                 module.logHook("[+] Hooked: ImageReader#setOnImageAvailableListener");
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
 
             try {
                 Method acquireLatest = ImageReader.class.getDeclaredMethod("acquireLatestImage");
-                module.hook(acquireLatest).intercept(chain -> {
-                    ImageReader reader = (ImageReader) chain.getThisObject();
-                    Object result = chain.proceed();
-                    if (result instanceof Image) {
-                        processAcquiredImage(reader, (Image) result);
-                    }
-                    return result;
-                });
+                module.hook(acquireLatest)
+                        .intercept(
+                                chain -> {
+                                    ImageReader reader = (ImageReader) chain.getThisObject();
+                                    Object result = chain.proceed(chain.getArgs().toArray());
+                                    if (result instanceof Image) {
+                                        processAcquiredImage(reader, (Image) result);
+                                    }
+                                    return result;
+                                });
                 module.logHook("[+] Hooked: ImageReader#acquireLatestImage");
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
 
             try {
                 Method acquireNext = ImageReader.class.getDeclaredMethod("acquireNextImage");
-                module.hook(acquireNext).intercept(chain -> {
-                    ImageReader reader = (ImageReader) chain.getThisObject();
-                    Object result = chain.proceed();
-                    if (result instanceof Image) {
-                        processAcquiredImage(reader, (Image) result);
-                    }
-                    return result;
-                });
+                module.hook(acquireNext)
+                        .intercept(
+                                chain -> {
+                                    ImageReader reader = (ImageReader) chain.getThisObject();
+                                    Object result = chain.proceed(chain.getArgs().toArray());
+                                    if (result instanceof Image) {
+                                        processAcquiredImage(reader, (Image) result);
+                                    }
+                                    return result;
+                                });
                 module.logHook("[+] Hooked: ImageReader#acquireNextImage");
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
 
             try {
                 Method close = ImageReader.class.getDeclaredMethod("close");
-                module.hook(close).intercept(chain -> {
-                    ImageReader reader = (ImageReader) chain.getThisObject();
-                    ReaderMetadata meta = readerTracker.get(reader);
-                    module.logHook("[*] ImageReader.close | Reader: " + (meta != null ? meta.toString() : "unknown"));
-                    return chain.proceed();
-                });
+                module.hook(close)
+                        .intercept(
+                                chain -> {
+                                    ImageReader reader = (ImageReader) chain.getThisObject();
+                                    ReaderMetadata meta = readerTracker.get(reader);
+                                    module.logHook(
+                                            "[*] ImageReader.close | Reader: "
+                                                    + (meta != null ? meta.toString() : "unknown"));
+                                    return chain.proceed(chain.getArgs().toArray());
+                                });
                 module.logHook("[+] Hooked: ImageReader#close");
-            } catch (Throwable ignored) {}
-            
+            } catch (Throwable ignored) {
+            }
+
         } catch (Throwable t) {
             module.logHook("[!] ImageReader hook failed: " + t.getMessage());
         }
@@ -180,12 +235,18 @@ public class ImageReaderHook {
 
     private String getShortFormatName(int format) {
         switch (format) {
-            case ImageFormat.JPEG: return "JPEG";
-            case ImageFormat.YUV_420_888: return "YUV";
-            case 0x1: return "RGBA";
-            case 0x22: return "PRIVATE";
-            case ImageFormat.RAW_SENSOR: return "RAW";
-            default: return "0x" + Integer.toHexString(format);
+            case ImageFormat.JPEG:
+                return "JPEG";
+            case ImageFormat.YUV_420_888:
+                return "YUV";
+            case 0x1:
+                return "RGBA";
+            case 0x22:
+                return "PRIVATE";
+            case ImageFormat.RAW_SENSOR:
+                return "RAW";
+            default:
+                return "0x" + Integer.toHexString(format);
         }
     }
 
@@ -224,17 +285,27 @@ public class ImageReaderHook {
                     if (buffer != null && !buffer.isReadOnly()) {
                         int capacity = buffer.remaining();
                         byte[] replacement = module.handleCapture(w, h, capacity);
-                        
+
                         if (replacement != null) {
                             buffer.clear();
                             if (buffer.remaining() < replacement.length) {
-                                module.logHook("[!] Activity: ImageReader JPEG replacement skipped: buffer too small (" + buffer.remaining() + " < " + replacement.length + ")");
+                                module.logHook(
+                                        "[!] Activity: ImageReader JPEG replacement skipped: buffer"
+                                            + " too small ("
+                                                + buffer.remaining()
+                                                + " < "
+                                                + replacement.length
+                                                + ")");
                                 return;
                             }
                             buffer.put(replacement);
-                            module.recordPipelineNode("ImageReader(" + w + "x" + h + " " + shortFmt + ")");
+                            module.recordPipelineNode(
+                                    "ImageReader(" + w + "x" + h + " " + shortFmt + ")");
                             module.reportPipelineCapture(w, h, replacement);
-                            module.logHook("[+] Activity: ImageReader JPEG replaced successfully (" + replacement.length + " bytes)");
+                            module.logHook(
+                                    "[+] Activity: ImageReader JPEG replaced successfully ("
+                                            + replacement.length
+                                            + " bytes)");
                         }
                     }
                 }
