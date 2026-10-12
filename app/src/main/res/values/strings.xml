@@ -8,9 +8,6 @@
     <string name="btn_select_video">Choose image or video</string>
     <string name="action_clear">Clear</string>
     <string name="note_restart">Restart target apps after changing the media source.</string>
-    <string name="toast_media_removed">Media removed</string>
-    <string name="toast_media_imported">Media successfully imported</string>
-    <string name="toast_media_import_failed">Failed to import media: %1$s</string>
     <string name="toast_unsupported_media">Unsupported file type</string>
     <string name="toast_image_conversion_failed">Image-to-video conversion failed</string>
     <string name="toast_media_processing_failed">Error processing media file</string>
@@ -39,8 +36,6 @@
     <string name="action_search">Search apps</string>
     <string name="label_no_apps_match">No applications match your search.</string>
     <string name="action_apply_scope">Apply scope (%1$d)</string>
-    <string name="label_loading_apps">Loading applications…</string>
-
     <string name="label_pipeline_monitor">Pipeline monitor</string>
     <string name="label_no_pipeline_history">No hook activity yet</string>
     <string name="label_last_active_app">Target: %1$s</string>

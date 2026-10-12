@@ -198,10 +198,6 @@ class UmbraCamModule : XposedModule() {
         audioDecoder?.readByteBuffer(buffer, length)
     }
 
-    fun getImageReaderCaptureWidth(): Int = injectors.imageReaderHook.activeCaptureWidth
-
-    fun getImageReaderCaptureHeight(): Int = injectors.imageReaderHook.activeCaptureHeight
-
     @JvmOverloads
     fun handleCapture(
         w: Int = 0,
