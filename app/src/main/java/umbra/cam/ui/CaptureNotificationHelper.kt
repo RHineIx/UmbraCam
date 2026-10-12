@@ -13,14 +13,13 @@ import umbra.cam.data.Constants.CAPTURE_NOTIFICATION_CHANNEL_ID
 import umbra.cam.data.Constants.CAPTURE_NOTIFICATION_ID
 
 object CaptureNotificationHelper {
-
     fun showCaptureNotification(
         context: Context,
         packageName: String,
         route: String,
         width: Int,
         height: Int,
-        thumbnailBytes: ByteArray?
+        thumbnailBytes: ByteArray?,
     ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             ?: return
@@ -28,23 +27,20 @@ object CaptureNotificationHelper {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CAPTURE_NOTIFICATION_CHANNEL_ID,
-                "UmbraCam Capture Alerts",
-                NotificationManager.IMPORTANCE_HIGH
+                context.getString(R.string.capture_notification_channel),
+                NotificationManager.IMPORTANCE_HIGH,
             ).apply {
-                description = "Heads-up alert when virtual photo is injected"
+                description = context.getString(R.string.capture_notification_description)
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 150, 100, 150)
             }
             notificationManager.createNotificationChannel(channel)
         }
 
-        val pm = context.packageManager
-        val appName = try {
-            val appInfo = pm.getApplicationInfo(packageName, 0)
-            pm.getApplicationLabel(appInfo).toString()
-        } catch (_: Exception) {
-            packageName.substringAfterLast('.')
-        }
+        val appName = runCatching {
+            val appInfo = context.packageManager.getApplicationInfo(packageName, 0)
+            context.packageManager.getApplicationLabel(appInfo).toString()
+        }.getOrDefault(packageName.substringAfterLast('.'))
 
         val openIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -53,35 +49,31 @@ object CaptureNotificationHelper {
             context,
             0,
             openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val thumbnailBitmap = if (thumbnailBytes != null && thumbnailBytes.isNotEmpty()) {
-            try {
-                BitmapFactory.decodeByteArray(thumbnailBytes, 0, thumbnailBytes.size)
-            } catch (_: Throwable) {
-                null
-            }
-        } else null
-
-        val resolutionText = if (width > 0 && height > 0) "${width}x${height}" else "Auto"
-        val bigSummary = "App: $appName ($packageName)\nPipeline: $route\nSize: $resolutionText"
+        val thumbnailBitmap = thumbnailBytes?.takeIf { it.isNotEmpty() }?.let {
+            runCatching { BitmapFactory.decodeByteArray(it, 0, it.size) }.getOrNull()
+        }
+        val resolutionText = if (width > 0 && height > 0) {
+            context.getString(R.string.notification_resolution, width, height)
+        } else {
+            context.getString(R.string.notification_resolution_auto)
+        }
+        val summary = context.getString(R.string.notification_summary, appName, packageName, route, resolutionText)
 
         val builder = NotificationCompat.Builder(context, CAPTURE_NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("UmbraCam: $appName")
-            .setContentText("Pipeline: $route")
-            .setStyle(NotificationCompat.BigTextStyle().bigText(bigSummary))
+            .setContentTitle(context.getString(R.string.notification_title, appName))
+            .setContentText(context.getString(R.string.notification_pipeline, route))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_EVENT)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setContentIntent(openPendingIntent)
 
-        if (thumbnailBitmap != null) {
-            builder.setLargeIcon(thumbnailBitmap)
-        }
-
+        if (thumbnailBitmap != null) builder.setLargeIcon(thumbnailBitmap)
         notificationManager.notify(CAPTURE_NOTIFICATION_ID, builder.build())
     }
 }
