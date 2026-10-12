@@ -1,4 +1,5 @@
 package umbra.cam.data
+
 object Constants {
     const val PREFS_NAME = "umbracam_prefs"
     const val KEY_MEDIA_PATH = "media_path"
@@ -6,6 +7,7 @@ object Constants {
     const val KEY_IS_MIRRORED = "is_mirrored"
     const val KEY_ROTATION_ANGLE = "rotation_angle"
     const val AUTHORITY = "umbra.cam.provider"
+    const val PIPELINE_CONTENT_URI = "content://umbra.cam.provider/pipeline"
 
     const val DEFAULT_CAPTURE_WIDTH = 1280
     const val DEFAULT_CAPTURE_HEIGHT = 1280
@@ -19,6 +21,8 @@ object Constants {
 
     const val METHOD_RECORD_NODE = "record_node"
     const val METHOD_NOTIFY_CAPTURE = "notify_capture"
+    const val METHOD_GET_PIPELINE = "get_pipeline"
+    const val METHOD_CLEAR_PIPELINE = "clear_pipeline"
     const val CAPTURE_NOTIFICATION_CHANNEL_ID = "umbracam_capture_channel"
     const val CAPTURE_NOTIFICATION_ID = 1001
 }

@@ -1,6 +1,5 @@
 package umbra.cam.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,7 +14,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -52,6 +50,7 @@ internal fun TargetAppsSheet(
     onTogglePackage: (String) -> Unit,
     onDismiss: () -> Unit,
     onApply: () -> Unit,
+    isLoading: Boolean,
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val filteredApps = remember(apps, query, showSystemApps) {
@@ -95,7 +94,9 @@ internal fun TargetAppsSheet(
                 shape = RoundedCornerShape(14.dp),
             )
             Spacer(Modifier.height(12.dp))
-            if (filteredApps.isEmpty()) {
+            if (isLoading) {
+                androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth())
+            } else if (filteredApps.isEmpty()) {
                 Text(
                     stringResource(R.string.label_no_apps_match),
                     color = colorScheme.onSurfaceVariant,
@@ -106,7 +107,7 @@ internal fun TargetAppsSheet(
                     modifier = Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 440.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    items(filteredApps, key = { it.packageName }) { app ->
+                    items(filteredApps, key = { it.packageName }, contentType = { "installed-app" }) { app ->
                         val checked = app.packageName in selectedPackages
                         ListItem(
                             headlineContent = {
@@ -121,15 +122,11 @@ internal fun TargetAppsSheet(
                                 )
                             },
                             leadingContent = {
-                                if (app.icon != null) {
-                                    Image(
-                                        bitmap = app.icon,
-                                        contentDescription = app.appName,
-                                        modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)),
-                                    )
-                                } else {
-                                    Icon(Icons.Default.Android, contentDescription = null)
-                                }
+                                AppIcon(
+                                    packageName = app.packageName,
+                                    contentDescription = app.appName,
+                                    modifier = Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)),
+                                )
                             },
                             trailingContent = {
                                 Checkbox(checked = checked, onCheckedChange = { onTogglePackage(app.packageName) })
@@ -141,6 +138,7 @@ internal fun TargetAppsSheet(
             }
             Button(
                 onClick = onApply,
+                enabled = !isLoading,
                 modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 24.dp).height(52.dp),
                 shape = RoundedCornerShape(14.dp),
             ) {

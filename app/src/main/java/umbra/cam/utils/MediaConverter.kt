@@ -14,27 +14,23 @@ import java.io.File
 
 @OptIn(UnstableApi::class)
 object MediaConverter {
-
     fun convertImageToMp4(
         context: Context,
         imageUri: Uri,
         outputFile: File,
-        onComplete: (Boolean) -> Unit
-    ) {
-        if (outputFile.exists()) {
-            outputFile.delete()
-        }
+        onTransformerCreated: (Transformer) -> Boolean = { true },
+        onComplete: (Boolean) -> Unit,
+    ): Transformer? {
+        if (outputFile.exists()) outputFile.delete()
 
         val mediaItem = MediaItem.Builder()
             .setUri(imageUri)
-            .setImageDurationMs(5000)
+            .setImageDurationMs(5_000)
             .build()
-
         val editedMediaItem = EditedMediaItem.Builder(mediaItem)
             .setFrameRate(30)
             .build()
-
-        val transformer = Transformer.Builder(context).build()
+        val transformer = Transformer.Builder(context.applicationContext).build()
 
         transformer.addListener(object : Transformer.Listener {
             override fun onCompleted(composition: Composition, exportResult: ExportResult) {
@@ -44,16 +40,24 @@ object MediaConverter {
             override fun onError(
                 composition: Composition,
                 exportResult: ExportResult,
-                exportException: ExportException
+                exportException: ExportException,
             ) {
                 onComplete(false)
             }
         })
 
-        try {
+        if (!onTransformerCreated(transformer)) {
+            transformer.cancel()
+            return transformer
+        }
+
+        return try {
             transformer.start(editedMediaItem, outputFile.absolutePath)
+            transformer
         } catch (_: Exception) {
+            transformer.cancel()
             onComplete(false)
+            null
         }
     }
 }

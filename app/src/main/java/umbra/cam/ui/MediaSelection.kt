@@ -6,17 +6,29 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.OptIn
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.transformer.Transformer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import umbra.cam.R
 import umbra.cam.utils.MediaConverter
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
+import kotlin.math.min
+
+private const val MAX_PREVIEW_DIMENSION = 1024
 
 internal sealed interface MediaImportResult {
     data class Success(val path: String) : MediaImportResult
@@ -25,25 +37,54 @@ internal sealed interface MediaImportResult {
 
 internal suspend fun loadPreviewBitmap(path: String): ImageBitmap? = withContext(Dispatchers.IO) {
     if (path.isEmpty() || !File(path).exists()) return@withContext null
-    runCatching {
+    try {
         if (path.endsWith(".mp4", ignoreCase = true)) {
             val retriever = MediaMetadataRetriever()
             try {
                 retriever.setDataSource(path)
-                retriever.getFrameAtTime(1_000_000)?.asImageBitmap()
+                val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                    ?.toIntOrNull()?.coerceAtLeast(1) ?: MAX_PREVIEW_DIMENSION
+                val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                    ?.toIntOrNull()?.coerceAtLeast(1) ?: MAX_PREVIEW_DIMENSION
+                val scale = min(
+                    1f,
+                    min(MAX_PREVIEW_DIMENSION.toFloat() / width, MAX_PREVIEW_DIMENSION.toFloat() / height),
+                )
+                retriever.getScaledFrameAtTime(
+                    1_000_000,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    (width * scale).toInt().coerceAtLeast(1),
+                    (height * scale).toInt().coerceAtLeast(1),
+                )?.asImageBitmap()
             } finally {
                 retriever.release()
             }
         } else {
-            BitmapFactory.decodeFile(path)?.asImageBitmap()
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            var sampleSize = 1
+            while (bounds.outWidth / sampleSize > MAX_PREVIEW_DIMENSION ||
+                bounds.outHeight / sampleSize > MAX_PREVIEW_DIMENSION
+            ) sampleSize *= 2
+            BitmapFactory.decodeFile(
+                path,
+                BitmapFactory.Options().apply { inSampleSize = sampleSize.coerceAtLeast(1) },
+            )?.asImageBitmap()
         }
-    }.getOrNull()
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (_: Exception) {
+        null
+    }
 }
 
+@OptIn(UnstableApi::class)
 internal suspend fun processMediaSelection(context: Context, uri: Uri): MediaImportResult =
     withContext(Dispatchers.IO) {
+        val appContext = context.applicationContext
+        var temporaryImage: File? = null
         try {
-            val mimeType = context.contentResolver.getType(uri)
+            val mimeType = appContext.contentResolver.getType(uri)
                 ?: run {
                     val extension = android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.toString())
                     android.webkit.MimeTypeMap.getSingleton()
@@ -56,37 +97,71 @@ internal suspend fun processMediaSelection(context: Context, uri: Uri): MediaImp
                 return@withContext MediaImportResult.Failure(R.string.toast_unsupported_media)
             }
 
-            context.filesDir.listFiles { _, name -> name.startsWith("virtual.") }
+            appContext.filesDir.listFiles { _, name -> name.startsWith("virtual.") }
                 ?.forEach { it.delete() }
             val extension = android.webkit.MimeTypeMap.getSingleton()
                 .getExtensionFromMimeType(mimeType)
                 ?.takeIf(String::isNotBlank)
                 ?: "bin"
-            val internalFile = File(context.filesDir, "virtual.$extension")
-            val input = context.contentResolver.openInputStream(uri)
+            val internalFile = File(appContext.filesDir, "virtual.$extension")
+            temporaryImage = if (isImage) internalFile else null
+            val input = appContext.contentResolver.openInputStream(uri)
                 ?: return@withContext MediaImportResult.Failure(R.string.toast_media_processing_failed)
             input.use { source ->
-                FileOutputStream(internalFile).use { output -> source.copyTo(output) }
+                FileOutputStream(internalFile).use { output -> source.copyToCancellable(output) }
             }
 
             if (isVideo) return@withContext MediaImportResult.Success(internalFile.absolutePath)
 
-            val outputVideo = File(context.filesDir, "virtual.mp4")
+            val outputVideo = File(appContext.filesDir, "virtual.mp4")
+            val transformer = AtomicReference<Transformer?>(null)
+            val handler = Handler(Looper.getMainLooper())
             val success = suspendCancellableCoroutine { continuation ->
-                Handler(Looper.getMainLooper()).post {
-                    try {
-                        MediaConverter.convertImageToMp4(context, Uri.fromFile(internalFile), outputVideo) { result ->
-                            if (continuation.isActive) continuation.resume(result)
-                        }
-                    } catch (_: Exception) {
-                        if (continuation.isActive) continuation.resume(false)
-                    }
+                val conversionRunnable = Runnable {
+                    if (!continuation.isActive) return@Runnable
+                    transformer.set(
+                        MediaConverter.convertImageToMp4(
+                            appContext,
+                            Uri.fromFile(internalFile),
+                            outputVideo,
+                            onTransformerCreated = { created ->
+                                transformer.set(created)
+                                continuation.isActive
+                            },
+                            onComplete = { result ->
+                                if (continuation.isActive) continuation.resume(result)
+                            },
+                        ),
+                    )
+                }
+                handler.post(conversionRunnable)
+                continuation.invokeOnCancellation {
+                    handler.removeCallbacks(conversionRunnable)
+                    transformer.getAndSet(null)?.cancel()
+                    internalFile.delete()
+                    outputVideo.delete()
                 }
             }
             internalFile.delete()
+            temporaryImage = null
             if (success) MediaImportResult.Success(outputVideo.absolutePath)
             else MediaImportResult.Failure(R.string.toast_image_conversion_failed)
+        } catch (cancellation: CancellationException) {
+            temporaryImage?.delete()
+            throw cancellation
         } catch (_: Exception) {
+            temporaryImage?.delete()
             MediaImportResult.Failure(R.string.toast_media_processing_failed)
         }
     }
+
+private suspend fun InputStream.copyToCancellable(output: OutputStream) {
+    val coroutineContext = coroutineContext
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    while (true) {
+        coroutineContext.ensureActive()
+        val bytesRead = read(buffer)
+        if (bytesRead < 0) break
+        output.write(buffer, 0, bytesRead)
+    }
+}

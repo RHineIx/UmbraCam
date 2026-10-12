@@ -4,38 +4,46 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
-import androidx.core.graphics.drawable.toBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import kotlin.coroutines.coroutineContext
 
 internal data class InstalledAppInfo(
     val packageName: String,
     val appName: String,
-    val icon: androidx.compose.ui.graphics.ImageBitmap?,
     val isSystemApp: Boolean,
 )
 
 internal object InstalledAppsRepository {
     suspend fun loadInstalledApps(context: Context): List<InstalledAppInfo> = withContext(Dispatchers.IO) {
-        val packageManager = context.packageManager
-        installedApplications(packageManager)
-            .asSequence()
-            .filterNot { it.packageName == context.packageName }
-            .map { it.toInstalledAppInfo(packageManager) }
-            .sortedBy { it.appName.lowercase(Locale.getDefault()) }
-            .toList()
+        val appContext = context.applicationContext
+        val packageManager = appContext.packageManager
+        val coroutineContext = coroutineContext
+        val apps = ArrayList<InstalledAppInfo>()
+        for (applicationInfo in installedApplications(packageManager)) {
+            coroutineContext.ensureActive()
+            if (applicationInfo.packageName == appContext.packageName) continue
+            val label = runCatching { packageManager.getApplicationLabel(applicationInfo).toString() }
+                .getOrDefault(applicationInfo.packageName)
+            apps += applicationInfo.toInstalledAppInfo(label)
+        }
+        apps.sortedBy { it.appName.lowercase(Locale.getDefault()) }
     }
 
     suspend fun loadScopedApps(context: Context, packages: List<String>): List<InstalledAppInfo> =
         withContext(Dispatchers.IO) {
-            val packageManager = context.packageManager
+            val packageManager = context.applicationContext.packageManager
+            val coroutineContext = coroutineContext
             packages.map { packageName ->
+                coroutineContext.ensureActive()
                 runCatching {
-                    packageManager.getApplicationInfo(packageName, 0).toInstalledAppInfo(packageManager)
+                    val info = packageManager.getApplicationInfo(packageName, 0)
+                    val label = packageManager.getApplicationLabel(info).toString()
+                    info.toInstalledAppInfo(label)
                 }.getOrElse {
-                    InstalledAppInfo(packageName, packageName, null, isSystemApp = false)
+                    InstalledAppInfo(packageName, packageName, isSystemApp = false)
                 }
             }
         }
@@ -48,14 +56,9 @@ internal object InstalledAppsRepository {
             packageManager.getInstalledApplications(0)
         }
 
-    private fun ApplicationInfo.toInstalledAppInfo(packageManager: PackageManager): InstalledAppInfo {
-        val label = runCatching { packageManager.getApplicationLabel(this).toString() }
-            .getOrDefault(packageName)
-        val icon = runCatching {
-            packageManager.getApplicationIcon(this).toBitmap(width = 96, height = 96).asImageBitmap()
-        }.getOrNull()
+    private fun ApplicationInfo.toInstalledAppInfo(label: String): InstalledAppInfo {
         val systemApp = flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-        return InstalledAppInfo(packageName, label, icon, systemApp)
+        return InstalledAppInfo(packageName, label, systemApp)
     }
 }
 

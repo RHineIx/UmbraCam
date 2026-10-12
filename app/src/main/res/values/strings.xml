@@ -39,6 +39,7 @@
     <string name="action_search">Search apps</string>
     <string name="label_no_apps_match">No applications match your search.</string>
     <string name="action_apply_scope">Apply scope (%1$d)</string>
+    <string name="label_loading_apps">Loading applications…</string>
 
     <string name="label_pipeline_monitor">Pipeline monitor</string>
     <string name="label_no_pipeline_history">No hook activity yet</string>

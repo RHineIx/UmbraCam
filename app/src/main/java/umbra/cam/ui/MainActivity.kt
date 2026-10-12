@@ -1,5 +1,6 @@
 package umbra.cam.ui
 
+import android.content.ComponentCallbacks2
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -10,6 +11,7 @@ import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import umbra.cam.R
 import umbra.cam.ui.theme.UmbraCamTheme
+import java.lang.ref.WeakReference
 
 class MainActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener {
     private val isModuleActive = mutableStateOf(false)
@@ -20,7 +22,7 @@ class MainActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        XposedServiceHelper.registerListener(this)
+        XposedServiceHelper.registerListener(WeakActivityServiceListener(this))
 
         setContent {
             UmbraCamTheme {
@@ -32,6 +34,12 @@ class MainActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener 
                 )
             }
         }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) AppIconCache.clear()
     }
 
     override fun onServiceBind(service: XposedService) {
@@ -115,5 +123,17 @@ class MainActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener 
                 Toast.LENGTH_LONG,
             ).show()
         }
+    }
+}
+
+private class WeakActivityServiceListener(activity: MainActivity) : XposedServiceHelper.OnServiceListener {
+    private val activityReference = WeakReference(activity)
+
+    override fun onServiceBind(service: XposedService) {
+        activityReference.get()?.onServiceBind(service)
+    }
+
+    override fun onServiceDied(service: XposedService) {
+        activityReference.get()?.onServiceDied(service)
     }
 }
