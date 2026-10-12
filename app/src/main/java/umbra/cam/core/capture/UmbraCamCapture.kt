@@ -14,6 +14,69 @@ import java.io.ByteArrayOutputStream
 
 object UmbraCamCapture {
 
+    /**
+     * Converts an encoded JPEG frame into the packed NV21 layout used by Camera1 preview
+     * callbacks. The dimensions must be even because Camera1 preview buffers are chroma-subsampled.
+     */
+    fun jpegToNv21(jpeg: ByteArray, width: Int, height: Int): ByteArray? {
+        if (jpeg.isEmpty() || width <= 0 || height <= 0 || width % 2 != 0 || height % 2 != 0) {
+            return null
+        }
+        var decoded: Bitmap? = null
+        var scaled: Bitmap? = null
+        return try {
+            decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
+            val bitmap = if (decoded.width == width && decoded.height == height) {
+                decoded
+            } else {
+                Bitmap.createScaledBitmap(decoded, width, height, true).also { scaled = it }
+            }
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            val ySize = width * height
+            val nv21 = ByteArray(ySize + ySize / 2)
+
+            for (row in 0 until height) {
+                for (col in 0 until width) {
+                    val color = pixels[row * width + col]
+                    val r = (color shr 16) and 0xff
+                    val g = (color shr 8) and 0xff
+                    val b = color and 0xff
+                    nv21[row * width + col] =
+                        (((66 * r + 129 * g + 25 * b + 128) shr 8) + 16)
+                            .coerceIn(0, 255)
+                            .toByte()
+                }
+            }
+
+            var chromaIndex = ySize
+            for (row in 0 until height step 2) {
+                for (col in 0 until width step 2) {
+                    var uSum = 0
+                    var vSum = 0
+                    for (dy in 0..1) {
+                        for (dx in 0..1) {
+                            val color = pixels[(row + dy) * width + col + dx]
+                            val r = (color shr 16) and 0xff
+                            val g = (color shr 8) and 0xff
+                            val b = color and 0xff
+                            uSum += (((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128)
+                            vSum += (((112 * r - 94 * g - 18 * b + 128) shr 8) + 128)
+                        }
+                    }
+                    nv21[chromaIndex++] = (vSum / 4).coerceIn(0, 255).toByte()
+                    nv21[chromaIndex++] = (uSum / 4).coerceIn(0, 255).toByte()
+                }
+            }
+            nv21
+        } catch (_: Throwable) {
+            null
+        } finally {
+            if (scaled != null && scaled !== decoded) scaled?.recycle()
+            decoded?.recycle()
+        }
+    }
+
     fun yuvFrameToBitmap(frame: MediaCodecYuvDecoder.YuvFrame): Bitmap? {
         return try {
             val width = frame.width

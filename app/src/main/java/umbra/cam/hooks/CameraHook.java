@@ -13,8 +13,12 @@ import android.view.SurfaceHolder;
 import io.github.libxposed.api.XposedModuleInterface;
 
 import umbra.cam.xposed.UmbraCamModule;
-
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.Collections;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * Hooks for the original Camera API (android.hardware.Camera). Consolidated all Legacy Camera logic
@@ -27,6 +31,8 @@ public class CameraHook {
     private final UmbraCamModule module;
     private final Handler mainHandler;
     private Surface viewfinderSurface;
+    private final Set<Camera> callbackLogOnce =
+            Collections.newSetFromMap(new WeakHashMap<Camera, Boolean>());
 
     public CameraHook(UmbraCamModule module) {
         this.module = module;
@@ -38,6 +44,7 @@ public class CameraHook {
             module.logHook("[*] Initializing Camera API (Legacy)");
             hookCameraParameters(param);
             hookViewfinder(param);
+            hookPreviewCallbacks(param);
             hookTakePicture(param);
             hookLegacyMethod1(param);
         } catch (Throwable t) {
@@ -128,6 +135,143 @@ public class CameraHook {
             module.logHook("[+] Hooked: Camera#stopPreview");
         } catch (Throwable t) {
             module.logHook("[!] Failed to hook viewfinder: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Some Camera1 clients consume NV21 frames through PreviewCallback instead of rendering to a
+     * Surface. Wrap all public callback registration variants so those clients receive virtual
+     * frames as well.
+     */
+    private void hookPreviewCallbacks(XposedModuleInterface.PackageReadyParam param) {
+        try {
+            int hooked = 0;
+            for (Method method : Camera.class.getDeclaredMethods()) {
+                String name = method.getName();
+                if (!(name.equals("setPreviewCallback")
+                        || name.equals("setPreviewCallbackWithBuffer")
+                        || name.equals("setOneShotPreviewCallback"))) {
+                    continue;
+                }
+                Class<?>[] parameterTypes = method.getParameterTypes();
+                if (parameterTypes.length != 1
+                        || !Camera.PreviewCallback.class.isAssignableFrom(parameterTypes[0])) {
+                    continue;
+                }
+                module.hook(method)
+                        .intercept(
+                                chain -> {
+                                    Object callback = chain.getArgs().get(0);
+                                    if (callback == null || isUmbraCallbackProxy(callback)) {
+                                        return chain.proceed(chain.getArgs().toArray());
+                                    }
+                                    Object[] args = chain.getArgs().toArray();
+                                    args[0] = createCallbackProxy(callback, parameterTypes[0], name);
+                                    module.logHook("[*] Camera1 callback registered: " + name);
+                                    return chain.proceed(args);
+                                });
+                hooked++;
+                module.logHook("[+] Hooked: Camera#" + name);
+            }
+            hookCallbackBuffer(param);
+            if (hooked == 0) {
+                module.logHook("[!] No Camera1 preview callback methods found");
+            }
+        } catch (Throwable t) {
+            module.logHook("[!] Failed to hook Camera1 preview callbacks: " + t.getMessage());
+        }
+    }
+
+    private void hookCallbackBuffer(XposedModuleInterface.PackageReadyParam param) {
+        try {
+            Method addCallbackBuffer = Camera.class.getDeclaredMethod("addCallbackBuffer", byte[].class);
+            module.hook(addCallbackBuffer)
+                    .intercept(
+                            chain -> {
+                                if (module.getMediaPath() != null) {
+                                    module.recordPipelineNode("Camera1(PreviewCallbackBuffer)");
+                                }
+                                return chain.proceed(chain.getArgs().toArray());
+                            });
+            module.logHook("[+] Hooked: Camera#addCallbackBuffer");
+        } catch (Throwable t) {
+            module.logHook("[!] Camera#addCallbackBuffer hook unavailable: " + t.getMessage());
+        }
+    }
+
+    private boolean isUmbraCallbackProxy(Object callback) {
+        if (!Proxy.isProxyClass(callback.getClass())) return false;
+        try {
+            return Proxy.getInvocationHandler(callback) instanceof PreviewCallbackHandler;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private Object createCallbackProxy(Object delegate, Class<?> callbackType, String hookName) {
+        ClassLoader loader = callbackType.getClassLoader();
+        if (loader == null) loader = CameraHook.class.getClassLoader();
+        return Proxy.newProxyInstance(
+                loader,
+                new Class<?>[] {callbackType},
+                new PreviewCallbackHandler(delegate, hookName));
+    }
+
+    private final class PreviewCallbackHandler implements InvocationHandler {
+        private final Object delegate;
+        private final String hookName;
+
+        private PreviewCallbackHandler(Object delegate, String hookName) {
+            this.delegate = delegate;
+            this.hookName = hookName;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            if (!"onPreviewFrame".equals(method.getName())
+                    || args == null
+                    || args.length < 2
+                    || !(args[0] instanceof byte[])
+                    || !(args[1] instanceof Camera)) {
+                return method.invoke(delegate, args);
+            }
+
+            byte[] original = (byte[]) args[0];
+            Camera camera = (Camera) args[1];
+            byte[] callbackFrame = original;
+            try {
+                Camera.Size size = camera.getParameters().getPreviewSize();
+                if (size != null && module.getMediaPath() != null) {
+                    byte[] replacement = module.handlePreviewFrame(size.width, size.height);
+                    if (replacement != null) {
+                        if (original != null && original.length >= replacement.length) {
+                            System.arraycopy(replacement, 0, original, 0, replacement.length);
+                            callbackFrame = original;
+                        } else {
+                            callbackFrame = replacement;
+                        }
+                        synchronized (callbackLogOnce) {
+                            if (callbackLogOnce.add(camera)) {
+                                module.recordPipelineNode(
+                                        "Camera1(" + hookName + " " + size.width + "x" + size.height + " NV21)");
+                                module.logHook(
+                                        "[+] Camera1 preview frame replacement active: "
+                                                + size.width
+                                                + "x"
+                                                + size.height
+                                                + " ("
+                                                + hookName
+                                                + ")");
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                module.logHook("[!] Camera1 preview frame replacement failed: " + t.getMessage());
+            }
+
+            ((Camera.PreviewCallback) delegate).onPreviewFrame(callbackFrame, camera);
+            return null;
         }
     }
 

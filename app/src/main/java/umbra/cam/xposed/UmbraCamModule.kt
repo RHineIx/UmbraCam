@@ -10,6 +10,7 @@ import io.github.libxposed.api.XposedModuleInterface
 import umbra.cam.core.audio.MediaCodecAudioDecoder
 import umbra.cam.core.capture.CaptureManager
 import umbra.cam.core.capture.MediaCodecYuvDecoder
+import umbra.cam.core.capture.UmbraCamCapture
 import umbra.cam.core.capture.YuvFrameProcessor
 import umbra.cam.core.engine.MediaEngine
 import umbra.cam.core.engine.UmbraCamEngine
@@ -30,6 +31,10 @@ class UmbraCamModule : XposedModule() {
     private val ignoreHooks = ThreadLocal.withInitial { false }
     private var yuvDecoder: MediaCodecYuvDecoder? = null
     private var audioDecoder: MediaCodecAudioDecoder? = null
+    private var lastPreviewJpeg: ByteArray? = null
+    private var lastPreviewNv21: ByteArray? = null
+    private var lastPreviewWidth = 0
+    private var lastPreviewHeight = 0
 
     private val injectors = UmbraCamInjectors(this)
     private val settings = SettingsManager()
@@ -149,6 +154,12 @@ class UmbraCamModule : XposedModule() {
         yuvDecoder = null
         audioDecoder?.stop()
         audioDecoder = null
+        synchronized(this) {
+            lastPreviewJpeg = null
+            lastPreviewNv21 = null
+            lastPreviewWidth = 0
+            lastPreviewHeight = 0
+        }
         engine.stop()
         captureManager.reset()
         injectors.imageReaderHook.reset()
@@ -247,6 +258,22 @@ class UmbraCamModule : XposedModule() {
         { isIgnoringHooks() },
         { setIgnoringHooks(it) },
     )
+
+    /** Returns a packed NV21 frame for legacy Camera1 preview callbacks. */
+    fun handlePreviewFrame(w: Int, h: Int): ByteArray? {
+        val jpeg = handleStreamFrame(w, h) ?: return null
+        synchronized(this) {
+            if (jpeg === lastPreviewJpeg && w == lastPreviewWidth && h == lastPreviewHeight) {
+                return lastPreviewNv21
+            }
+            val nv21 = UmbraCamCapture.jpegToNv21(jpeg, w, h) ?: return null
+            lastPreviewJpeg = jpeg
+            lastPreviewNv21 = nv21
+            lastPreviewWidth = w
+            lastPreviewHeight = h
+            return nv21
+        }
+    }
 
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
         super.onPackageReady(param)
