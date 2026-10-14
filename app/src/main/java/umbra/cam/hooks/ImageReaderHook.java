@@ -3,6 +3,7 @@ package umbra.cam.hooks;
 import android.graphics.ImageFormat;
 import android.media.Image;
 import android.media.ImageReader;
+import android.view.Surface;
 
 import androidx.annotation.NonNull;
 
@@ -20,7 +21,7 @@ import java.util.WeakHashMap;
 
 /**
  * Specialized hooks for android.media.ImageReader. Detects when ImageReader is created and when
- * data starts flowing. Added surgical injection for RGBA_8888 (0x1) format used by Instagram.
+ * data starts flowing. Includes surgical injection for YUV_420_888, JPEG, and RGBA_8888 (0x1).
  */
 public class ImageReaderHook {
     private final UmbraCamModule module;
@@ -218,7 +219,19 @@ public class ImageReaderHook {
                         .intercept(
                                 chain -> {
                                     ImageReader reader = (ImageReader) chain.getThisObject();
-                                    ReaderMetadata meta = readerTracker.get(reader);
+                                    ReaderMetadata meta = readerTracker.remove(reader);
+                                    if (meta != null) {
+                                        module.unregisterImageReaderSurface(meta.surfaceId);
+                                    } else if (reader != null) {
+                                        try {
+                                            Surface s = reader.getSurface();
+                                            if (s != null) {
+                                                module.unregisterImageReaderSurface(
+                                                        SystemUtils.INSTANCE.getSurfaceId(s));
+                                            }
+                                        } catch (Throwable ignored) {
+                                        }
+                                    }
                                     module.logHook(
                                             "[*] ImageReader.close | Reader: "
                                                     + (meta != null ? meta.toString() : "unknown"));
@@ -291,7 +304,7 @@ public class ImageReaderHook {
                             if (buffer.remaining() < replacement.length) {
                                 module.logHook(
                                         "[!] Activity: ImageReader JPEG replacement skipped: buffer"
-                                            + " too small ("
+                                                + " too small ("
                                                 + buffer.remaining()
                                                 + " < "
                                                 + replacement.length
@@ -312,8 +325,18 @@ public class ImageReaderHook {
             } catch (Throwable t) {
                 module.logHook("[!] Failed to inject JPEG: " + t.getMessage());
             }
-        } else if (format == 0x1) {
+        } else if (module.getMediaPath() != null && format == 0x1) {
             module.recordPipelineNode("ImageReader(" + w + "x" + h + " " + shortFmt + ")");
+            boolean injected = module.injectRgbaFrame(image, w, h);
+            if (injected) {
+                if (injectedFlows.add(key)) {
+                    module.logHook("[+] Activity: ImageReader RGBA replacement active: " + key);
+                }
+                if (module.isCapturingState()) {
+                    byte[] thumbnail = module.handleCapture(w, h);
+                    module.reportPipelineCapture(w, h, thumbnail);
+                }
+            }
         }
     }
 }

@@ -15,11 +15,12 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * Hooks for the Camera2 API (android.hardware.camera2) and ImageReader. Consolidated all Camera2
- * logic including Hijacking and Surgical Diversion.
+ * Hooks for the Camera2 API (android.hardware.camera2). Consolidates Camera2 session discovery,
+ * per-surface OutputConfiguration preview hijacking, and CaptureRequest target diversion.
  */
 public class Camera2Hook {
     private final UmbraCamModule module;
+    private volatile Object activeCameraDevice;
 
     public Camera2Hook(UmbraCamModule module) {
         this.module = module;
@@ -46,20 +47,31 @@ public class Camera2Hook {
                             .loadClass("android.hardware.camera2.impl.CameraDeviceImpl");
             for (Method method : cameraDeviceClass.getDeclaredMethods()) {
                 if (method.getName().startsWith("createCaptureSession")) {
+                    final String methodName = method.getName();
                     module.hook(method)
                             .intercept(
                                     chain -> {
+                                        Object thisDevice = chain.getThisObject();
+                                        if (thisDevice != null) {
+                                            activeCameraDevice = thisDevice;
+                                        }
                                         module.logHook(
-                                                "[*] Activity: CameraDeviceImpl#"
-                                                        + method.getName());
-                                        module.incrementSessionGeneration();
-                                        module.clearPreviewSurfaces();
+                                                "[*] Activity: CameraDeviceImpl#" + methodName);
+                                        if (!methodName.equals("createCaptureSessionInternal")) {
+                                            module.incrementSessionGeneration();
+                                        }
                                         for (Object arg : chain.getArgs()) {
                                             inspectDiscoveryArgument(arg);
                                         }
-                                        return chain.proceed(chain.getArgs().toArray());
+                                        try {
+                                            return chain.proceed(chain.getArgs().toArray());
+                                        } finally {
+                                            if (methodName.equals("createCaptureSessionInternal")) {
+                                                module.onSessionConfigured();
+                                            }
+                                        }
                                     });
-                    module.logHook("[+] Hooked: CameraDeviceImpl#" + method.getName());
+                    module.logHook("[+] Hooked: CameraDeviceImpl#" + methodName);
                 }
             }
         } catch (Throwable t) {
@@ -71,11 +83,7 @@ public class Camera2Hook {
         if (arg instanceof Surface) {
             Surface s = (Surface) arg;
             module.logSessionOutput(s);
-            String sStr = s.toString();
-            if (sStr.contains("SurfaceTexture")
-                    || sStr.contains("SurfaceView")
-                    || sStr.contains("BLAST")
-                    || sStr.contains("Surface")) {
+            if (!module.isDummySurface(s) && module.isPreviewSurface(s)) {
                 module.registerPreviewSurface(s);
             }
         } else if (arg instanceof OutputConfiguration) {
@@ -110,19 +118,13 @@ public class Camera2Hook {
                                         }
                                     }
 
-                                    if (surface != null) {
-                                        String sStr = surface.toString();
-                                        boolean isPreview =
-                                                sStr.contains("SurfaceTexture")
-                                                        || sStr.contains("SurfaceView")
-                                                        || sStr.contains("BLAST")
-                                                        || sStr.contains("Surface");
+                                    if (surface != null && !module.isDummySurface(surface)) {
+                                        boolean isPreview = module.isPreviewSurface(surface);
+                                        boolean alreadyChosen = module.isHijackedPreview(surface);
 
-                                        if (isPreview) {
-                                            module.registerPreviewSurface(surface);
-                                        }
-
-                                        if (isPreview && !module.getPreviewSwapped()) {
+                                        if (alreadyChosen
+                                                || (isPreview && !module.getPreviewSwapped())) {
+                                            String sStr = surface.toString();
                                             String surfaceType =
                                                     sStr.contains("SurfaceView")
                                                             ? "SurfaceView"
@@ -131,14 +133,16 @@ public class Camera2Hook {
                                                     "Camera2(" + surfaceType + ")");
                                             module.logHook(
                                                     "[!] Action: Hijacking Preview Surface via"
-                                                        + " OutputConfiguration ("
+                                                            + " OutputConfiguration ("
                                                             + sStr
                                                             + ")");
                                             module.setPreviewSwapped(true);
+                                            module.markPreviewHijacked(surface);
                                             module.handleModernPreview(surface);
 
                                             Object[] newArgs = chain.getArgs().toArray();
-                                            newArgs[surfaceIndex] = module.getDummySurface();
+                                            newArgs[surfaceIndex] =
+                                                    module.getDummySurfaceFor(surface);
                                             return chain.proceed(newArgs);
                                         }
                                     }
@@ -159,7 +163,9 @@ public class Camera2Hook {
                     .intercept(
                             chain -> {
                                 Surface surface = (Surface) chain.getArgs().get(0);
-                                if (surface != null && module.getMediaPath() != null) {
+                                if (surface != null
+                                        && !module.isDummySurface(surface)
+                                        && module.getMediaPath() != null) {
                                     CaptureRequest.Builder builder =
                                             (CaptureRequest.Builder) chain.getThisObject();
                                     Integer intent = null;
@@ -175,6 +181,12 @@ public class Camera2Hook {
                                         module.logHook("[*] Activity: addTarget [STILL_CAPTURE]");
                                         module.recordPipelineNode("Camera2(StillCapture)");
                                         module.triggerCaptureState();
+                                        if (module.isHijackedPreview(surface)) {
+                                            return chain.proceed(
+                                                    new Object[] {
+                                                        module.getDummySurfaceFor(surface)
+                                                    });
+                                        }
                                         return chain.proceed(chain.getArgs().toArray());
                                     }
 
@@ -184,6 +196,12 @@ public class Camera2Hook {
                                                             .CONTROL_CAPTURE_INTENT_VIDEO_RECORD) {
                                         module.logHook("[*] Activity: addTarget [VIDEO_RECORD]");
                                         module.recordPipelineNode("Camera2(VideoRecord)");
+                                        if (module.isHijackedPreview(surface)) {
+                                            return chain.proceed(
+                                                    new Object[] {
+                                                        module.getDummySurfaceFor(surface)
+                                                    });
+                                        }
                                         return chain.proceed(chain.getArgs().toArray());
                                     }
 
@@ -193,11 +211,20 @@ public class Camera2Hook {
                                                             .CONTROL_CAPTURE_INTENT_VIDEO_SNAPSHOT) {
                                         module.logHook("[*] Activity: addTarget [VIDEO_SNAPSHOT]");
                                         module.recordPipelineNode("Camera2(VideoSnapshot)");
+                                        if (module.isHijackedPreview(surface)) {
+                                            return chain.proceed(
+                                                    new Object[] {
+                                                        module.getDummySurfaceFor(surface)
+                                                    });
+                                        }
                                         return chain.proceed(chain.getArgs().toArray());
                                     }
 
-                                    if (module.isPreviewSurface(surface)) {
-                                        Object[] newArgs = new Object[] {module.getDummySurface()};
+                                    if (module.isHijackedPreview(surface)
+                                            || module.isPreviewSurface(surface)) {
+                                        module.markPreviewHijacked(surface);
+                                        Object[] newArgs =
+                                                new Object[] {module.getDummySurfaceFor(surface)};
                                         return chain.proceed(newArgs);
                                     }
                                 }
@@ -218,8 +245,18 @@ public class Camera2Hook {
             module.hook(deviceClose)
                     .intercept(
                             chain -> {
+                                String threadName = Thread.currentThread().getName();
+                                if (threadName != null && threadName.contains("Finalizer")) {
+                                    return chain.proceed(chain.getArgs().toArray());
+                                }
+                                Object closingDevice = chain.getThisObject();
                                 module.logHook("[*] Activity: CameraDeviceImpl#close");
-                                module.stopEngine();
+                                if (closingDevice == null || closingDevice == activeCameraDevice) {
+                                    activeCameraDevice = null;
+                                    module.stopEngine();
+                                } else {
+                                    module.onSessionConfigured();
+                                }
                                 return chain.proceed(chain.getArgs().toArray());
                             });
 
@@ -230,7 +267,11 @@ public class Camera2Hook {
             module.hook(sessionClose)
                     .intercept(
                             chain -> {
-                                module.logHook("[*] Activity: CameraCaptureSessionImpl#close");
+                                String threadName = Thread.currentThread().getName();
+                                if (threadName == null || !threadName.contains("Finalizer")) {
+                                    module.logHook("[*] Activity: CameraCaptureSessionImpl#close");
+                                    module.onCaptureSessionClosed();
+                                }
                                 return chain.proceed(chain.getArgs().toArray());
                             });
             module.logHook("[+] Hooked: Camera2 Cleanup methods");

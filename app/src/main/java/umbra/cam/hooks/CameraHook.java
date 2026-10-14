@@ -13,6 +13,7 @@ import android.view.SurfaceHolder;
 import io.github.libxposed.api.XposedModuleInterface;
 
 import umbra.cam.xposed.UmbraCamModule;
+
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -22,7 +23,7 @@ import java.util.WeakHashMap;
 
 /**
  * Hooks for the original Camera API (android.hardware.Camera). Consolidated all Legacy Camera logic
- * including Renderer hooks.
+ * including Viewfinder Surface/SurfaceTexture diversion and PreviewCallback injection.
  */
 @SuppressWarnings("deprecation")
 public class CameraHook {
@@ -30,7 +31,8 @@ public class CameraHook {
 
     private final UmbraCamModule module;
     private final Handler mainHandler;
-    private Surface viewfinderSurface;
+    private volatile Surface viewfinderSurface;
+    private volatile SurfaceTexture viewfinderTexture;
     private final Set<Camera> callbackLogOnce =
             Collections.newSetFromMap(new WeakHashMap<Camera, Boolean>());
 
@@ -93,8 +95,17 @@ public class CameraHook {
                     .intercept(
                             chain -> {
                                 SurfaceHolder holder = (SurfaceHolder) chain.getArgs().get(0);
-                                if (holder != null && holder.getSurface() != null)
+                                if (holder != null && holder.getSurface() != null) {
+                                    viewfinderTexture = null;
                                     viewfinderSurface = holder.getSurface();
+                                    if (module.getMediaPath() != null
+                                            && viewfinderSurface.isValid()) {
+                                        module.registerPreviewSurface(viewfinderSurface);
+                                        Object[] divertedArgs =
+                                                new Object[] {createSurfaceHolderProxy(holder)};
+                                        return chain.proceed(divertedArgs);
+                                    }
+                                }
                                 return chain.proceed(chain.getArgs().toArray());
                             });
             module.logHook("[+] Hooked: Camera#setPreviewDisplay");
@@ -105,7 +116,15 @@ public class CameraHook {
                     .intercept(
                             chain -> {
                                 SurfaceTexture texture = (SurfaceTexture) chain.getArgs().get(0);
-                                if (texture != null) viewfinderSurface = new Surface(texture);
+                                if (texture != null) {
+                                    viewfinderTexture = texture;
+                                    viewfinderSurface = null;
+                                    if (module.getMediaPath() != null) {
+                                        Object[] divertedArgs =
+                                                new Object[] {module.getDummySurfaceTexture()};
+                                        return chain.proceed(divertedArgs);
+                                    }
+                                }
                                 return chain.proceed(chain.getArgs().toArray());
                             });
             module.logHook("[+] Hooked: Camera#setPreviewTexture");
@@ -115,10 +134,17 @@ public class CameraHook {
                     .intercept(
                             chain -> {
                                 Object result = chain.proceed(chain.getArgs().toArray());
-                                if (module.getMediaPath() != null
-                                        && viewfinderSurface != null
-                                        && viewfinderSurface.isValid()) {
-                                    module.registerPreviewSurface(viewfinderSurface);
+                                if (module.getMediaPath() != null) {
+                                    SurfaceTexture targetTexture = viewfinderTexture;
+                                    Surface targetSurface = viewfinderSurface;
+                                    if (targetTexture != null) {
+                                        module.recordPipelineNode("Camera1(SurfaceTexture)");
+                                        module.handleCamera1Preview(targetTexture);
+                                    } else if (targetSurface != null && targetSurface.isValid()) {
+                                        module.recordPipelineNode("Camera1(SurfaceHolder)");
+                                        module.registerPreviewSurface(targetSurface);
+                                        module.handleModernPreview(targetSurface);
+                                    }
                                 }
                                 return result;
                             });
@@ -133,8 +159,58 @@ public class CameraHook {
                                 return result;
                             });
             module.logHook("[+] Hooked: Camera#stopPreview");
+
+            Method release = Camera.class.getDeclaredMethod("release");
+            module.hook(release)
+                    .intercept(
+                            chain -> {
+                                Object result = chain.proceed(chain.getArgs().toArray());
+                                viewfinderTexture = null;
+                                viewfinderSurface = null;
+                                module.stopEngine();
+                                return result;
+                            });
+            module.logHook("[+] Hooked: Camera#release");
         } catch (Throwable t) {
             module.logHook("[!] Failed to hook viewfinder: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Wraps a SurfaceHolder so that Camera#setPreviewDisplay binds the physical camera to the dummy
+     * surface while leaving the real Surface free for ExoPlayer rendering.
+     */
+    private SurfaceHolder createSurfaceHolderProxy(SurfaceHolder delegate) {
+        if (Proxy.isProxyClass(delegate.getClass())) {
+            try {
+                if (Proxy.getInvocationHandler(delegate) instanceof SurfaceHolderDiversionHandler) {
+                    return delegate;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        ClassLoader loader = SurfaceHolder.class.getClassLoader();
+        if (loader == null) loader = CameraHook.class.getClassLoader();
+        return (SurfaceHolder)
+                Proxy.newProxyInstance(
+                        loader,
+                        new Class<?>[] {SurfaceHolder.class},
+                        new SurfaceHolderDiversionHandler(delegate));
+    }
+
+    private final class SurfaceHolderDiversionHandler implements InvocationHandler {
+        private final SurfaceHolder delegate;
+
+        private SurfaceHolderDiversionHandler(SurfaceHolder delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            if ("getSurface".equals(method.getName()) && module.getMediaPath() != null) {
+                return module.getDummySurface();
+            }
+            return method.invoke(delegate, args);
         }
     }
 
@@ -166,7 +242,8 @@ public class CameraHook {
                                         return chain.proceed(chain.getArgs().toArray());
                                     }
                                     Object[] args = chain.getArgs().toArray();
-                                    args[0] = createCallbackProxy(callback, parameterTypes[0], name);
+                                    args[0] =
+                                            createCallbackProxy(callback, parameterTypes[0], name);
                                     module.logHook("[*] Camera1 callback registered: " + name);
                                     return chain.proceed(args);
                                 });
@@ -184,7 +261,8 @@ public class CameraHook {
 
     private void hookCallbackBuffer(XposedModuleInterface.PackageReadyParam param) {
         try {
-            Method addCallbackBuffer = Camera.class.getDeclaredMethod("addCallbackBuffer", byte[].class);
+            Method addCallbackBuffer =
+                    Camera.class.getDeclaredMethod("addCallbackBuffer", byte[].class);
             module.hook(addCallbackBuffer)
                     .intercept(
                             chain -> {
@@ -253,7 +331,13 @@ public class CameraHook {
                         synchronized (callbackLogOnce) {
                             if (callbackLogOnce.add(camera)) {
                                 module.recordPipelineNode(
-                                        "Camera1(" + hookName + " " + size.width + "x" + size.height + " NV21)");
+                                        "Camera1("
+                                                + hookName
+                                                + " "
+                                                + size.width
+                                                + "x"
+                                                + size.height
+                                                + " NV21)");
                                 module.logHook(
                                         "[+] Camera1 preview frame replacement active: "
                                                 + size.width

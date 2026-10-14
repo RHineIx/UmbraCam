@@ -6,17 +6,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import umbra.cam.ui.theme.UmbraCamTheme
 import java.lang.ref.WeakReference
 
-class MainActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener {
+class MainActivity :
+    ComponentActivity(),
+    XposedServiceHelper.OnServiceListener {
     private val isModuleActive = mutableStateOf(false)
     private val serviceFramework = mutableStateOf("")
     private var xposedService: XposedService? = null
-    
-    // Delegation logic moved to ScopeManager for better modularity
+
     private val scopeManager = ScopeManager()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,13 +28,23 @@ class MainActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener 
 
         setContent {
             UmbraCamTheme {
+                val applyScopeCallback =
+                    remember {
+                        { selected: Set<String> ->
+                            scopeManager.applyScopeSelection(
+                                this@MainActivity,
+                                xposedService,
+                                packageName,
+                                selected,
+                            )
+                        }
+                    }
+
                 MainScreen(
                     isModuleActive = isModuleActive.value,
                     serviceFramework = serviceFramework.value,
                     scopedApps = scopeManager.scopedApps,
-                    onApplyScopeSelection = { selected ->
-                        scopeManager.applyScopeSelection(this, xposedService, packageName, selected)
-                    }
+                    onApplyScopeSelection = applyScopeCallback,
                 )
             }
         }
@@ -59,7 +71,9 @@ class MainActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener 
     }
 }
 
-private class WeakActivityServiceListener(activity: MainActivity) : XposedServiceHelper.OnServiceListener {
+private class WeakActivityServiceListener(
+    activity: MainActivity,
+) : XposedServiceHelper.OnServiceListener {
     private val activityReference = WeakReference(activity)
 
     override fun onServiceBind(service: XposedService) {

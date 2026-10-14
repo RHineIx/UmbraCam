@@ -16,7 +16,20 @@ object RootUtils {
      */
     suspend fun forceStopApp(packageName: String): Boolean =
         withContext(Dispatchers.IO) {
-            executeSuCommand("am force-stop $packageName")
+            executeSuCommands(listOf("am force-stop $packageName"))
+        }
+
+    /**
+     * Force stops multiple applications in a single Root shell session.
+     */
+    suspend fun forceStopApps(packageNames: Collection<String>): Boolean =
+        withContext(Dispatchers.IO) {
+            val commands = packageNames
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .map { "am force-stop $it" }
+            if (commands.isEmpty()) return@withContext false
+            executeSuCommands(commands)
         }
 
     /**
@@ -54,15 +67,17 @@ object RootUtils {
     }
 
     /**
-     * Executes a shell command with superuser privileges.
+     * Executes a list of shell commands sequentially within a single superuser session.
      */
-    private fun executeSuCommand(command: String): Boolean {
+    private fun executeSuCommands(commands: List<String>): Boolean {
         var process: Process? = null
         var os: DataOutputStream? = null
         return try {
             process = Runtime.getRuntime().exec("su")
             os = DataOutputStream(process.outputStream)
-            os.writeBytes("$command\n")
+            for (command in commands) {
+                os.writeBytes("$command\n")
+            }
             os.writeBytes("exit\n")
             os.flush()
             process.waitFor() == 0

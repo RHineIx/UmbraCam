@@ -4,21 +4,24 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
-import android.graphics.Matrix as AndroidMatrix
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.media.MediaMetadataRetriever
 import androidx.core.graphics.createBitmap
 import androidx.core.net.toUri
 import java.io.ByteArrayOutputStream
+import android.graphics.Matrix as AndroidMatrix
 
 object UmbraCamCapture {
-
     /**
      * Converts an encoded JPEG frame into the packed NV21 layout used by Camera1 preview
      * callbacks. The dimensions must be even because Camera1 preview buffers are chroma-subsampled.
      */
-    fun jpegToNv21(jpeg: ByteArray, width: Int, height: Int): ByteArray? {
+    fun jpegToNv21(
+        jpeg: ByteArray,
+        width: Int,
+        height: Int,
+    ): ByteArray? {
         if (jpeg.isEmpty() || width <= 0 || height <= 0 || width % 2 != 0 || height % 2 != 0) {
             return null
         }
@@ -26,11 +29,12 @@ object UmbraCamCapture {
         var scaled: Bitmap? = null
         return try {
             decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
-            val bitmap = if (decoded.width == width && decoded.height == height) {
-                decoded
-            } else {
-                Bitmap.createScaledBitmap(decoded, width, height, true).also { scaled = it }
-            }
+            val bitmap =
+                if (decoded.width == width && decoded.height == height) {
+                    decoded
+                } else {
+                    Bitmap.createScaledBitmap(decoded, width, height, true).also { scaled = it }
+                }
             val pixels = IntArray(width * height)
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
             val ySize = width * height
@@ -77,8 +81,8 @@ object UmbraCamCapture {
         }
     }
 
-    fun yuvFrameToBitmap(frame: MediaCodecYuvDecoder.YuvFrame): Bitmap? {
-        return try {
+    fun yuvFrameToBitmap(frame: MediaCodecYuvDecoder.YuvFrame): Bitmap? =
+        try {
             val width = frame.width
             val height = frame.height
             val nv21 = ByteArray(width * height * 3 / 2)
@@ -102,7 +106,6 @@ object UmbraCamCapture {
         } catch (_: Throwable) {
             null
         }
-    }
 
     fun createJpeg(
         context: Context,
@@ -116,7 +119,7 @@ object UmbraCamCapture {
         printLog: (String) -> Unit,
         liveFrame: MediaCodecYuvDecoder.YuvFrame? = null,
     ): ByteArray? {
-        printLog("Capture Process: Starting for $path (Time: $timeMs ms, Live: ${liveFrame != null}, MaxSize: $maxSizeBytes)")
+        printLog("Capture Process: Starting for $path (Time:$timeMs ms, Live: ${liveFrame != null}, MaxSize:$maxSizeBytes)")
 
         var retriever: MediaMetadataRetriever? = null
         return try {
@@ -134,8 +137,10 @@ object UmbraCamCapture {
                     retriever = MediaMetadataRetriever()
                     retriever.setDataSource(context, path.toUri())
 
-                    val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                        ?.toLongOrNull() ?: 0L
+                    val durationMs =
+                        retriever
+                            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            ?.toLongOrNull() ?: 0L
                     val loopedTimeMs = if (durationMs > 0L) timeMs.toLong() % durationMs else timeMs.toLong()
 
                     val targetUs = loopedTimeMs * 1000L
@@ -162,19 +167,22 @@ object UmbraCamCapture {
             val rotatedSourceW = if (rotation % 180 != 0) sourceH else sourceW
             val rotatedSourceH = if (rotation % 180 != 0) sourceW else sourceH
 
-            val (resolvedTargetW, resolvedTargetH) = if ((rotatedSourceW < rotatedSourceH && targetW > targetH) ||
-                (rotatedSourceW > rotatedSourceH && targetW < targetH)) {
-                Pair(targetH, targetW)
-            } else {
-                Pair(targetW, targetH)
-            }
+            val (resolvedTargetW, resolvedTargetH) =
+                if ((rotatedSourceW < rotatedSourceH && targetW > targetH) ||
+                    (rotatedSourceW > rotatedSourceH && targetW < targetH)
+                ) {
+                    Pair(targetH, targetW)
+                } else {
+                    Pair(targetW, targetH)
+                }
 
             val scale = Math.max(resolvedTargetW.toFloat() / rotatedSourceW, resolvedTargetH.toFloat() / rotatedSourceH)
-            val matrix = AndroidMatrix().apply {
-                postScale(scale, scale)
-                if (rotation != 0) postRotate(rotation.toFloat())
-                if (mirrored) postScale(-1f, 1f)
-            }
+            val matrix =
+                AndroidMatrix().apply {
+                    postScale(scale, scale)
+                    if (rotation != 0) postRotate(rotation.toFloat())
+                    if (mirrored) postScale(-1f, 1f)
+                }
 
             val transformedSource = Bitmap.createBitmap(rawBitmap, 0, 0, sourceW, sourceH, matrix, true)
 
@@ -194,10 +202,10 @@ object UmbraCamCapture {
                 if (result.size <= maxSizeBytes) break
 
                 quality -= 5
-                printLog("Capture Process: Target size exceeded (${result.size} > $maxSizeBytes). Retrying with quality $quality")
+                printLog("Capture Process: Target size exceeded (${result.size} >$maxSizeBytes). Retrying with quality $quality")
             } while (quality > 5)
 
-            printLog("Capture Process: SUCCESS (${result.size} bytes, quality $quality)")
+            printLog("Capture Process: SUCCESS (${result.size} bytes, quality$quality)")
 
             if (rawBitmap != transformedSource) rawBitmap.recycle()
             transformedSource.recycle()
@@ -208,7 +216,10 @@ object UmbraCamCapture {
             printLog("Capture Process: ERROR - ${e.message}")
             null
         } finally {
-            try { retriever?.release() } catch (_: Exception) {}
+            try {
+                retriever?.release()
+            } catch (_: Exception) {
+            }
         }
     }
 }

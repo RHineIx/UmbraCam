@@ -30,7 +30,9 @@ class UmbraCamModule : XposedModule() {
     private var hooksInstalled = false
     private val ignoreHooks = ThreadLocal.withInitial { false }
     private var yuvDecoder: MediaCodecYuvDecoder? = null
+    private var lastYuvMediaPath: String? = null
     private var audioDecoder: MediaCodecAudioDecoder? = null
+    private var lastAudioMediaPath: String? = null
     private var lastPreviewJpeg: ByteArray? = null
     private var lastPreviewNv21: ByteArray? = null
     private var lastPreviewWidth = 0
@@ -97,7 +99,13 @@ class UmbraCamModule : XposedModule() {
 
     fun getCurrentPosition(): Long = engine.getCurrentPosition()
 
-    fun registerPreviewSurface(s: Surface) = surfaceManager.registerPreviewSurface(s)
+    fun isDummySurface(s: Surface?): Boolean = engine.isDummySurface(s)
+
+    fun registerPreviewSurface(s: Surface) = surfaceManager.registerPreviewSurface(s, engine.isDummySurface(s))
+
+    fun markPreviewHijacked(s: Surface) = surfaceManager.markPreviewHijacked(s)
+
+    fun isHijackedPreview(s: Surface?): Boolean = surfaceManager.isHijackedPreview(s)
 
     fun registerImageReaderSurface(
         s: Surface,
@@ -106,13 +114,21 @@ class UmbraCamModule : XposedModule() {
         h: Int,
     ) = surfaceManager.registerImageReaderSurface(s, f, w, h)
 
-    fun isPreviewSurface(s: Surface?) = surfaceManager.isPreviewSurface(s)
+    fun unregisterImageReaderSurface(surfaceId: Long) = surfaceManager.unregisterImageReaderSurface(surfaceId)
+
+    fun isPreviewSurface(s: Surface?) = surfaceManager.isPreviewSurface(s, engine.isDummySurface(s))
 
     fun logSessionOutput(s: Surface) = surfaceManager.logSessionOutput(s)
 
     fun incrementSessionGeneration() = surfaceManager.incrementSessionGeneration()
 
     fun clearPreviewSurfaces() = surfaceManager.clearPreviewSurfaces(engine.isPlaying())
+
+    fun onSessionConfigured() = surfaceManager.onSessionConfigured()
+
+    fun onCaptureSessionClosed() {
+        surfaceManager.onSessionConfigured()
+    }
 
     fun recordPipelineNode(node: String) {
         PipelineTracker.recordNode(mContext, node)
@@ -127,6 +143,32 @@ class UmbraCamModule : XposedModule() {
         PipelineTracker.reportCapture(mContext, width, height, thumbnail)
     }
 
+    @Synchronized
+    private fun getOrStartYuvDecoder(
+        ctx: Context,
+        path: String,
+    ): MediaCodecYuvDecoder {
+        if (yuvDecoder == null || lastYuvMediaPath != path) {
+            yuvDecoder?.stop()
+            yuvDecoder = MediaCodecYuvDecoder(ctx, path) { printLog(it) }.apply { start() }
+            lastYuvMediaPath = path
+        }
+        return yuvDecoder!!
+    }
+
+    @Synchronized
+    private fun getOrStartAudioDecoder(
+        ctx: Context,
+        path: String,
+    ): MediaCodecAudioDecoder {
+        if (audioDecoder == null || lastAudioMediaPath != path) {
+            audioDecoder?.stop()
+            audioDecoder = MediaCodecAudioDecoder(ctx, path) { printLog(it) }.apply { start() }
+            lastAudioMediaPath = path
+        }
+        return audioDecoder!!
+    }
+
     fun injectYuvFrame(
         image: android.media.Image,
         width: Int,
@@ -135,12 +177,15 @@ class UmbraCamModule : XposedModule() {
         val path = settings.mediaPath
         val ctx = mContext
         if (path != null && ctx != null && path.lowercase().endsWith(".mp4")) {
-            if (yuvDecoder == null) {
-                yuvDecoder = MediaCodecYuvDecoder(ctx, path) { printLog(it) }.apply { start() }
-            }
-            val frame = yuvDecoder?.latestFrame
+            val decoder = getOrStartYuvDecoder(ctx, path)
+            val frame = decoder.latestFrame
             if (frame != null) {
-                yuvProcessor.injectYuvFrame(image, frame)
+                yuvProcessor.injectYuvFrame(
+                    image,
+                    frame,
+                    settings.rotationAngle,
+                    settings.isMirrored,
+                )
                 return
             }
         }
@@ -149,17 +194,44 @@ class UmbraCamModule : XposedModule() {
         yuvProcessor.injectToImage(image, jpeg)
     }
 
+    fun injectRgbaFrame(
+        image: android.media.Image,
+        width: Int,
+        height: Int,
+    ): Boolean {
+        val path = settings.mediaPath ?: return false
+        val ctx = mContext ?: return false
+
+        var liveFrame: MediaCodecYuvDecoder.YuvFrame? = null
+        if (path.lowercase().endsWith(".mp4")) {
+            val decoder = getOrStartYuvDecoder(ctx, path)
+            liveFrame = decoder.latestFrame
+        }
+
+        val fallbackJpeg = if (liveFrame == null) handleStreamFrame(width, height) else null
+        return yuvProcessor.injectRgbaFrame(
+            image,
+            liveFrame,
+            fallbackJpeg,
+            settings.rotationAngle,
+            settings.isMirrored,
+        )
+    }
+
     fun stopEngine() {
-        yuvDecoder?.stop()
-        yuvDecoder = null
-        audioDecoder?.stop()
-        audioDecoder = null
         synchronized(this) {
+            yuvDecoder?.stop()
+            yuvDecoder = null
+            lastYuvMediaPath = null
+            audioDecoder?.stop()
+            audioDecoder = null
+            lastAudioMediaPath = null
             lastPreviewJpeg = null
             lastPreviewNv21 = null
             lastPreviewWidth = 0
             lastPreviewHeight = 0
         }
+        surfaceManager.resetAll()
         engine.stop()
         captureManager.reset()
         injectors.imageReaderHook.reset()
@@ -169,7 +241,11 @@ class UmbraCamModule : XposedModule() {
 
     fun handleModernPreview(s: Surface) = engine.handleModernPreview(s)
 
+    fun getDummySurfaceFor(targetSurface: Surface?): Surface = engine.getDummySurfaceFor(targetSurface)
+
     fun getDummySurface() = engine.getDummySurface()
+
+    fun getDummySurfaceTexture(): SurfaceTexture = engine.getDummySurfaceTexture()
 
     fun injectAudioBytes(
         buffer: ByteArray,
@@ -178,10 +254,7 @@ class UmbraCamModule : XposedModule() {
     ) {
         val path = settings.mediaPath ?: return
         val ctx = mContext ?: return
-        if (audioDecoder == null) {
-            audioDecoder = MediaCodecAudioDecoder(ctx, path) { printLog(it) }.apply { start() }
-        }
-        audioDecoder?.readBytes(buffer, offset, length)
+        getOrStartAudioDecoder(ctx, path).readBytes(buffer, offset, length)
     }
 
     fun injectAudioShorts(
@@ -191,10 +264,7 @@ class UmbraCamModule : XposedModule() {
     ) {
         val path = settings.mediaPath ?: return
         val ctx = mContext ?: return
-        if (audioDecoder == null) {
-            audioDecoder = MediaCodecAudioDecoder(ctx, path) { printLog(it) }.apply { start() }
-        }
-        audioDecoder?.readShorts(buffer, offset, length)
+        getOrStartAudioDecoder(ctx, path).readShorts(buffer, offset, length)
     }
 
     fun injectAudioByteBuffer(
@@ -203,10 +273,7 @@ class UmbraCamModule : XposedModule() {
     ) {
         val path = settings.mediaPath ?: return
         val ctx = mContext ?: return
-        if (audioDecoder == null) {
-            audioDecoder = MediaCodecAudioDecoder(ctx, path) { printLog(it) }.apply { start() }
-        }
-        audioDecoder?.readByteBuffer(buffer, length)
+        getOrStartAudioDecoder(ctx, path).readByteBuffer(buffer, length)
     }
 
     @JvmOverloads
@@ -260,7 +327,10 @@ class UmbraCamModule : XposedModule() {
     )
 
     /** Returns a packed NV21 frame for legacy Camera1 preview callbacks. */
-    fun handlePreviewFrame(w: Int, h: Int): ByteArray? {
+    fun handlePreviewFrame(
+        w: Int,
+        h: Int,
+    ): ByteArray? {
         val jpeg = handleStreamFrame(w, h) ?: return null
         synchronized(this) {
             if (jpeg === lastPreviewJpeg && w == lastPreviewWidth && h == lastPreviewHeight) {
@@ -281,6 +351,11 @@ class UmbraCamModule : XposedModule() {
 
         // API 102 isolation prevents self-hooking; execution halts here if target is the module app itself
         if (param.packageName == "umbra.cam") {
+            return
+        }
+
+        // Skip push notification background processes (such as :fbns) that never use camera hardware
+        if (processName.endsWith(":fbns")) {
             return
         }
 
